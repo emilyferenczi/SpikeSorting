@@ -179,7 +179,7 @@ process job_dispatch {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-job-dispatch.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout d6bdb9cc02d6711790a5c406cd50c1434074b5e2 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] running capsule..."
 	cd capsule/code
@@ -237,7 +237,7 @@ process preprocessing {
 	# Newer commits use si.load() which requires SI 0.102+
 	git -C capsule-repo -c core.fileMode=false checkout 8b993d495e6230b6b2aabfd4acff364679e864b8 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	# Conditionally use custom preprocessing script
 	echo "[${task.tag}] DEBUG: use_custom string = '${use_custom}'"
@@ -309,7 +309,7 @@ process spikesort_kilosort25 {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-spikesort-kilosort25.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout 8c8987260a27c75b1f523d306b40a16962a97ea6 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -361,7 +361,7 @@ process spikesort_kilosort4 {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-spikesort-kilosort4.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout 6b4e6cd5bf90e05be7ce7e2de9a28f4dcfa02c29 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -410,7 +410,7 @@ process spikesort_spykingcircus2 {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-spikesort-spykingcircus2.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout 1f88d6741e33bf9a0e6e23107c64f3c7ad17b5e4 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -461,7 +461,7 @@ process postprocessing {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-postprocessing.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout afbc577c888c6213846eb52649ba8654b585f1af --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -506,7 +506,7 @@ process curation {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-curation.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout a8d31a85ceeedb903f19c5b8476cdaf8a8b750e6 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -552,7 +552,7 @@ process unit_classifier {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-unit-classifier.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout a5f1e947c7099090cca2c8250b9bad0b796a67dd --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -604,7 +604,7 @@ process visualization {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-visualization.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout f58ab7cda7757b4703da049a160a5677c2cd9c54 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -660,7 +660,7 @@ process results_collector {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ephys-results-collector.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout 73cb90e9c321a6c06012681ca08d93b71e99d952 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -704,7 +704,7 @@ process nwb_subject {
 	git clone "https://github.com/AllenNeuralDynamics/aind-subject-nwb.git" capsule-repo
     git -C capsule-repo -c core.fileMode=false checkout 6a3615779353c733622c7e65cd8aea12622b4b35 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -750,7 +750,7 @@ process nwb_ecephys {
 	git clone "https://github.com/AllenNeuralDynamics/aind-ecephys-nwb.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout 5bbb7a8dc57058f2040ea0b3957dd345ca302795 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
@@ -800,7 +800,7 @@ process nwb_units {
 	git clone "https://github.com/AllenNeuralDynamics/aind-units-nwb.git" capsule-repo
 	git -C capsule-repo -c core.fileMode=false checkout b532ec8dc7d1dc8751bb4de80941772465aaecd9 --quiet
 	mv capsule-repo/code capsule/code
-	rm -rf capsule-repo
+	rm -rf capsule-repo || (sleep 10 && rm -rf capsule-repo) || true
 
 	echo "[${task.tag}] allocated time: ${task.time}"
 
