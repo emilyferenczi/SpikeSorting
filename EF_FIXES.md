@@ -24,9 +24,9 @@ all existing sorts. Which setup to use for the GPe project is tracked in gpe-neu
 
 ## Running the test re-sort on Kempner (20260805_EF405_g0)
 
-The launcher has an `EF_FIXES` knob (default `false`), and `pipeline/user_profiles.conf` has a profile `emily_eftest`: the
-settings of the existing GPe sorts (high-pass 300 Hz only, destripe, bad channels interpolated, not removed) + `EF_FIXES=true`,
-under its own scratch folder `/n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest`. It produces
+The launcher has an `EF_FIXES` knob (default `false`), and `pipeline/user_profiles.conf` has a profile `emily_eftest`:
+`emily_noband` (the profile of the existing GPe sorts: high-pass 300 Hz only, destripe, bad channels interpolated, not removed)
++ `EF_FIXES=true`, under its own scratch folder `/n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest`. It produces
 
     --denoising destripe --t-start 0 --t-stop <end> --no-remove-bad-channels --destripe-float32 --destripe-pad-to-group --destripe-strict
 
@@ -43,3 +43,6 @@ under its own scratch folder `/n/netscratch/bsabatini_lab/Lab/eferenczi/spikesor
 Output: `.../spikesorting_eftest/aind_output_scratch/20260805_EF405_g0_output`. In its `processing.json`, preprocessing
 should show `ef_fixes` all true and `denoising_strategy: destripe`; the job log should show
 `[custom] EF fixes: interpolation / CMR / destripe on float32`.
+
+After the test, if accepted: `pipeline/shun_spikesort_pipeline.sh pipeline/spike_sort.slrm emily_noband EF_FIXES=true` (or add
+`emily_noband.EF_FIXES=true` to `user_profiles.conf`).
