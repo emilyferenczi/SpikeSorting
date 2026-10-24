@@ -130,11 +130,13 @@ export BAD_CHANNELS
 # BANDPASS_FILTER   : true | false  (false = skip bandpass entirely)
 # BANDPASS_FREQ_MIN : Hz  (only used when BANDPASS_FILTER=true)
 # BANDPASS_FREQ_MAX : Hz  (only used when BANDPASS_FILTER=true)
+# EF_FIXES          : true | false  (destripe on float32 + padding capped per shank + no silent CMR fallback; see EF_FIXES.md)
 DENOISING_METHOD="destripe"
 REMOVE_BAD_CHANNELS="false"
 BANDPASS_FILTER="true"
 BANDPASS_FREQ_MIN="300"
 BANDPASS_FREQ_MAX="10000"
+EF_FIXES="false"
 
 # ================================
 # Build preprocessing args from knobs
@@ -147,6 +149,10 @@ fi
 
 if [ "$REMOVE_BAD_CHANNELS" = "false" ]; then
     PREPROCESSING_ARGS="${PREPROCESSING_ARGS} --no-remove-bad-channels"
+fi
+
+if [ "$EF_FIXES" = "true" ]; then
+    PREPROCESSING_ARGS="${PREPROCESSING_ARGS} --destripe-float32 --destripe-pad-to-group --destripe-strict"
 fi
 
 # Append bad channels if provided (only when using custom preprocessing)

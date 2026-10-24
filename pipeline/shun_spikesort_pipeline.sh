@@ -39,7 +39,7 @@ if [ -z "$Slurm_file" ]; then
   echo "  [user_profile] : Optional profile from pipeline/user_profiles.conf"
   echo "  [KEY=VALUE]    : Optional knob overrides (space-separated, highest priority)"
   echo "                   Available knobs: DENOISING_METHOD REMOVE_BAD_CHANNELS"
-  echo "                                    BANDPASS_FILTER BANDPASS_FREQ_MIN BANDPASS_FREQ_MAX"
+  echo "                                    BANDPASS_FILTER BANDPASS_FREQ_MIN BANDPASS_FREQ_MAX EF_FIXES"
   exit 1
 fi
 
@@ -112,7 +112,7 @@ if [ -n "$user_profile" ]; then
     #   2. <profile>.<KNOB> in user_profiles.conf
     #   3. Default value in spike_sort.slrm
     declare -A user_knob_overrides
-    knob_names=(DENOISING_METHOD REMOVE_BAD_CHANNELS BANDPASS_FILTER BANDPASS_FREQ_MIN BANDPASS_FREQ_MAX)
+    knob_names=(DENOISING_METHOD REMOVE_BAD_CHANNELS BANDPASS_FILTER BANDPASS_FREQ_MIN BANDPASS_FREQ_MAX EF_FIXES)
     if [ -f "$user_profiles_config" ]; then
         for knob in "${knob_names[@]}"; do
             val=$(awk -F= -v key="${user_profile}.${knob}" '$1==key {print $2}' "$user_profiles_config" | tail -n 1)
@@ -141,7 +141,7 @@ else
     fi
     # No conf overrides for the default profile, but apply any command-line KEY=VALUE overrides
     declare -A user_knob_overrides
-    knob_names=(DENOISING_METHOD REMOVE_BAD_CHANNELS BANDPASS_FILTER BANDPASS_FREQ_MIN BANDPASS_FREQ_MAX)
+    knob_names=(DENOISING_METHOD REMOVE_BAD_CHANNELS BANDPASS_FILTER BANDPASS_FREQ_MIN BANDPASS_FREQ_MAX EF_FIXES)
     for knob in "${!cli_knob_overrides[@]}"; do
         user_knob_overrides[$knob]="${cli_knob_overrides[$knob]}"
         echo "  $knob -> ${cli_knob_overrides[$knob]} (command-line override)"

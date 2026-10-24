@@ -21,3 +21,25 @@ Tested 2026-10-24 with SpikeInterface 0.101.2 on 5 min of 20260805_EF405_g0: as 
 
 **Status: pending the test re-sort of 20260805_EF405_g0.** Until that is checked, `main` (= Shun's pipeline) is what produced
 all existing sorts. Which setup to use for the GPe project is tracked in gpe-neuropixels `neuropixels/spikesorting/README.md`.
+
+## Running the test re-sort on Kempner (20260805_EF405_g0)
+
+The launcher has an `EF_FIXES` knob (default `false`), and `pipeline/user_profiles.conf` has a profile `emily_eftest`: the
+settings of the existing GPe sorts (high-pass 300 Hz only, destripe, bad channels interpolated, not removed) + `EF_FIXES=true`,
+under its own scratch folder `/n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest`. It produces
+
+    --denoising destripe --t-start 0 --t-stop <end> --no-remove-bad-channels --destripe-float32 --destripe-pad-to-group --destripe-strict
+
+(the existing 0805 sort: the same without the last three). Always give a profile: without one the launcher uses Shun's folders.
+
+    cd /n/holylabs/bsabatini_lab/Users/eferenczi
+    git clone -b ef-fixes https://github.com/emilyferenczi/SpikeSorting.git SpikeSortingEF
+    cd SpikeSortingEF
+    mkdir -p /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest/aind_input/todo
+    # put (copy or link) the session folder 20260805_EF405_g0 into .../spikesorting_eftest/aind_input/todo/
+    tmux new -s eftest
+    pipeline/shun_spikesort_pipeline.sh pipeline/spike_sort.slrm emily_eftest
+
+Output: `.../spikesorting_eftest/aind_output_scratch/20260805_EF405_g0_output`. In its `processing.json`, preprocessing
+should show `ef_fixes` all true and `denoising_strategy: destripe`; the job log should show
+`[custom] EF fixes: interpolation / CMR / destripe on float32`.
