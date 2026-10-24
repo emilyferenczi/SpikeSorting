@@ -40,7 +40,7 @@ The launcher has an `EF_FIXES` knob (default `false`), and `pipeline/user_profil
     tmux new -s eftest
     pipeline/shun_spikesort_pipeline.sh pipeline/spike_sort.slrm emily_eftest
 
-Output: `.../spikesorting_eftest/aind_output_scratch/20260805_EF405_g0_output`. In its `processing.json`, preprocessing
+Output to download: `.../spikesorting_eftest/aind_output_fordownload/20260805_EF405_g0_output` (`aind_output_scratch` is the pipeline's working copy). In its `processing.json`, preprocessing
 should show `ef_fixes` all true and `denoising_strategy: destripe`; the job log should show
 `[custom] EF fixes: interpolation / CMR / destripe on float32`.
 
