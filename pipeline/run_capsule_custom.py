@@ -144,6 +144,25 @@ bad_channels_config_help = (
 )
 parser.add_argument("--bad-channels-config", default=None, help=bad_channels_config_help)
 
+# ============================================================================
+# EF fixes (Emily Ferenczi, 2026-10-24) -- all off by default, so a run without these flags is unchanged
+# ============================================================================
+parser.add_argument(
+    "--destripe-float32", action="store_true",
+    help="Run bad-channel interpolation, destripe and CMR on float32 data and round back to int16 before saving. "
+    "SpikeInterface < 0.104 divides by the destripe AGC gain in place in the input dtype, so int16 input sets every "
+    "sample smaller than the local mean |x| to 0 (fixed upstream in SpikeInterface 0.104).",
+)
+parser.add_argument(
+    "--destripe-pad-to-group", action="store_true",
+    help="Cap destripe's n_channel_pad / n_channel_taper at each channel group's size. Without it, a group (shank) with "
+    "fewer channels than n_channel_pad (60) makes destripe fail, and the pipeline falls back to CMR.",
+)
+parser.add_argument(
+    "--destripe-strict", action="store_true",
+    help="Stop with an error when destripe fails, instead of falling back to CMR.",
+)
+
 
 # ============================================================================
 # Helper functions for manual bad channels
@@ -453,7 +472,7 @@ def dump_to_json_or_pickle(recording, results_folder, base_name, relative_to):
         recording.dump_to_pickle(results_folder / f"{base_name}.pkl", relative_to=relative_to)
 
 
-def apply_by_group(recording, func, func_kwargs, group_property="group", func_name="function"):
+def apply_by_group(recording, func, func_kwargs, group_property="group", func_name="function", kwargs_for_group=None):
     """
     Apply a SpikeInterface preprocessing function per channel-group (e.g., per shank),
     then aggregate back into a single recording.
@@ -464,13 +483,15 @@ def apply_by_group(recording, func, func_kwargs, group_property="group", func_na
         func_kwargs: Keyword arguments for the function
         group_property: Property name for grouping (default: "group")
         func_name: Name of the function for logging (default: "function")
+        kwargs_for_group: optional callable (group_recording, func_kwargs) -> kwargs for that group (EF fixes)
     """
     func_kwargs = func_kwargs or {}
+    kw = (lambda r: kwargs_for_group(r, func_kwargs)) if kwargs_for_group is not None else (lambda r: func_kwargs)
 
     # No grouping info -> just run normally
     if group_property not in recording.get_property_keys():
         print(f"\t[custom] Applying {func_name} without grouping (no '{group_property}' property)")
-        return func(recording, **func_kwargs)
+        return func(recording, **kw(recording))
 
     split = recording.split_by(group_property)
 
@@ -483,12 +504,22 @@ def apply_by_group(recording, func, func_kwargs, group_property="group", func_na
         for key in keys:
             num_channels = split[key].get_num_channels()
             print(f"\t[custom]   Processing group {key}: {num_channels} channels")
-            processed_dict[key] = func(split[key], **func_kwargs)
+            processed_dict[key] = func(split[key], **kw(split[key]))
         print(f"\t[custom] ✓ {func_name} completed for all groups, aggregating channels")
         return si.aggregate_channels([processed_dict[k] for k in keys])
 
     print(f"\t[custom] Applying {func_name} without grouping (single group)")
-    return func(recording, **func_kwargs)
+    return func(recording, **kw(recording))
+
+
+def pad_to_group(recording, func_kwargs):
+    """EF fixes: cap destripe's channel padding / taper at the group's channel count"""
+    kw = dict(func_kwargs); n = recording.get_num_channels()
+    for k in ("n_channel_pad", "n_channel_taper"):
+        if kw.get(k) is not None and int(kw[k]) > n:
+            print(f"\t[custom]   EF fixes: {k} {kw[k]} -> {n} (group has {n} channels)")
+            kw[k] = n
+    return kw
 
 
 def detect_bad_channels_by_group(recording, detect_kwargs, group_property="group"):
@@ -533,6 +564,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     DENOISING_STRATEGY = args.denoising or args.static_denoising
+    DESTRIPE_FLOAT32 = args.destripe_float32
+    DESTRIPE_PAD_TO_GROUP = args.destripe_pad_to_group
+    DESTRIPE_STRICT = args.destripe_strict
     FILTER_TYPE = args.filter_type or args.static_filter_type
     BANDPASS_FREQ_MIN = args.bandpass_freq_min
     BANDPASS_FREQ_MAX = args.bandpass_freq_max
@@ -599,6 +633,8 @@ if __name__ == "__main__":
 
     preprocessing_params = processing_params["preprocessing"]
     preprocessing_params["denoising_strategy"] = DENOISING_STRATEGY
+    preprocessing_params["ef_fixes"] = dict(destripe_float32=DESTRIPE_FLOAT32, destripe_pad_to_group=DESTRIPE_PAD_TO_GROUP,
+                                            destripe_strict=DESTRIPE_STRICT)
     preprocessing_params["remove_out_channels"] = REMOVE_OUT_CHANNELS
     preprocessing_params["remove_bad_channels"] = REMOVE_BAD_CHANNELS
     preprocessing_params["max_bad_channel_fraction"] = MAX_BAD_CHANNEL_FRACTION
@@ -824,6 +860,11 @@ if __name__ == "__main__":
                     else:
                         recording_rm_out = recording_filt_full
 
+                    if DESTRIPE_FLOAT32:
+                        recording_rm_out = spre.astype(recording_rm_out, "float32")
+                        print(f"\t[custom] EF fixes: interpolation / CMR / destripe on float32 (int16 AGC fix)")
+                        preprocessing_notes += "\n- EF fixes: interpolation / CMR / destripe on float32, rounded to int16 after."
+
                     # Common reference denoising
                     print(f"\n\t[custom] === Common Reference (CMR) preprocessing ===")
                     try:
@@ -876,6 +917,7 @@ if __name__ == "__main__":
                             preprocessing_params["highpass_spatial_filter"],
                             group_property="group",
                             func_name="highpass_spatial_filter (destripe)",
+                            kwargs_for_group=pad_to_group if DESTRIPE_PAD_TO_GROUP else None,
                         )
                         if recording_hp_spatial is None:
                             print(f"\t[custom] ⚠ Highpass spatial filter returned None")
@@ -909,10 +951,15 @@ if __name__ == "__main__":
                             recording_processed = recording_hp_spatial
                             print(f"\t[custom] ✓ Using destripe (highpass spatial filter) denoising")
                         else:
+                            if DESTRIPE_STRICT:
+                                raise RuntimeError("Destripe failed and --destripe-strict is set (see the error above)")
                             print(f"\t[custom] ⚠ Destripe failed, falling back to CMR")
                             recording_processed = recording_processed_cmr
                             denoising_strategy = "cmr"
                             preprocessing_notes += "\n- Destripe failed, fell back to CMR."
+                            # EF fixes: record what actually ran (processing.json otherwise still says "destripe")
+                            preprocessing_params["denoising_strategy"] = "cmr"
+                            preprocessing_params["denoising_requested"] = "destripe"
                         # ================================================================
                     print(f"\t[custom] Final denoising strategy: {denoising_strategy}")
                     print(f"\t[custom] ===========================================\n")
@@ -931,6 +978,10 @@ if __name__ == "__main__":
                         print(f"\tRemoving {len(bad_channel_ids)} channels after {denoising_strategy} preprocessing")
                         recording_processed = recording_processed.remove_channels(bad_channel_ids)
                         preprocessing_notes += f"\n- Removed {len(bad_channel_ids)} bad channels after preprocessing.\n"
+
+                    if DESTRIPE_FLOAT32 and np.dtype(recording_processed.get_dtype()) != np.dtype("int16"):
+                        recording_processed = spre.astype(recording_processed, "int16", round=True)
+                        print(f"\t[custom] EF fixes: rounded the processed recording back to int16")
 
                     # save to binary to speed up downstream processing
                     recording_bin = recording_processed.save(folder=preprocessing_output_folder)
