@@ -107,6 +107,7 @@ def estimate(X, trig, fs, nch, blocks, find_offset=True):
             b = sc > best; best[b] = sc[b]; shift[b] = j
         A = np.stack([Xs[i, J + shift[i]:J + shift[i] + W] for i in range(len(Xs))])
         T = np.median(A, 0)
+    del Xs
     nt = int(TAPER_MS * fs / 1000); tap = np.ones(W); r = 0.5 - 0.5 * np.cos(np.pi * np.arange(nt) / nt); tap[:nt] = r; tap[-nt:] = r[::-1]
     T = (T * tap[:, None]).astype(np.float32)
     ub = np.unique(blocks); amp = np.zeros((len(A), len(ub)), np.float32)
@@ -226,6 +227,10 @@ def main():
     ap.add_argument("--model", choices=["template", "lowrank"], default="lowrank",
                     help="template: one median template, scaled per lick and block; lowrank: --k components per block (default)")
     ap.add_argument("--k", type=int, default=3, help="components per electrode block for --model lowrank")
+    ap.add_argument("--patch-ms", type=float, default=0.0,
+                    help="after the subtraction, replace +-this many ms around each transient's peak by a straight line on every "
+                         "channel (2026-10-25: 0.13 ms removed every remaining artifact peak on 20260825_EF405_g0, whose transient is "
+                         "2-3 samples wide; costs the real signal in those 0.27 ms per transient). 0 = off")
     ap.add_argument("--find", choices=["markers", "detect"], default="markers",
                     help="markers: clean at the lick markers (+ the session offset, +-3 ms); detect: find the transients by their "
                          "shape over the whole recording (lick markers only seed the template) -- for sessions whose marker timing "
@@ -286,7 +291,8 @@ def main():
     del A
     before = lick_average(Xin, est["starts"], W, nch, fs)
     Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
-    log("subtracting")
+    hp = int(round(a.patch_ms * fs / 1000)) if a.patch_ms else 0
+    log("subtracting" + (f", then a straight line over +-{hp} samples at each transient's peak" if hp else ""))
     for i, s in enumerate(est["starts"]):
         if a.model == "lowrank":
             rem = np.zeros((W, nch), np.float32)
@@ -295,12 +301,16 @@ def main():
         else:
             rem = est["amp"][i, bi][None, :] * T
         seg = Y[s:s + W, :nch].astype(np.float32) - rem
+        if hp:   # straight line over the transient's peak (what the model cannot follow when the transient is 2-3 samples wide)
+            c = est["pre"]; a0, a1 = c - hp - 1, c + hp + 1; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
+            seg[a0:a1 + 1] = seg[a0] * (1 - wl) + seg[a1] * wl
         Y[s:s + W, :nch] = np.clip(np.round(seg), -32768, 32767).astype(np.int16)
     Y.flush(); del Y
     Z = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
+                patch_ms=a.patch_ms, patch_samples=hp,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
                 blocks={int(b): dict(n_ch=int((blocks == b).sum()), amp_median=float(np.median(est["amp"][:, k])),
