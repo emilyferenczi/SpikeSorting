@@ -1,0 +1,29 @@
+#!/bin/bash
+# Lick-contact artifact removal before sorting (lick_clean_raw.py): writes a cleaned copy of one session folder.
+# Submit from the SpikeSortingEF folder:
+#   sbatch pipeline/lick_clean/lick_clean.slrm <session_dir> <out_parent_dir>
+# e.g. sbatch pipeline/lick_clean/lick_clean.slrm \
+#        /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest/aind_input/20260805_EF405_g0 \
+#        /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest2/aind_input/todo
+# Same partition / account / python env as the raw_extract LFP job (kempner_requeue needs a GPU request; the job uses CPU only).
+# If the job is preempted and requeued it starts again from scratch (the incomplete <session>.partial folder is removed).
+#SBATCH --job-name=lick_clean
+#SBATCH --partition=kempner_requeue
+#SBATCH --account=kempner_bsabatini_lab
+#SBATCH --requeue
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=24G
+#SBATCH --time=03:00:00
+#SBATCH --output=lick_clean_%j.out
+#SBATCH --error=lick_clean_%j.err
+
+set -euo pipefail
+SRC=${1:?usage: sbatch lick_clean.slrm <session_dir> <out_parent_dir>}
+OUT=${2:?usage: sbatch lick_clean.slrm <session_dir> <out_parent_dir>}
+PY=/n/holylabs/LABS/bsabatini_lab/Users/eferenczi/envs/raw_extract/bin/python
+[ -x "$PY" ] || { echo "python env not found: $PY"; exit 1; }
+mkdir -p "$OUT"
+echo "[$(date)] $SRC -> $OUT on $(hostname)"
+"$PY" "${SLURM_SUBMIT_DIR:?}/pipeline/lick_clean/lick_clean_raw.py" "$SRC" "$OUT"
+echo "[$(date)] done"
