@@ -3,7 +3,7 @@
 Every lick contact puts a ~1 ms electrical transient on all channels (largest on superficial channels). This script writes a
 cleaned COPY of a session folder in which that transient is subtracted at every lick; the original files are never modified.
 
-  1. licks       every lick onset from sync_<session>.mat (NIDAQ lick line -> Imec AP sample)
+  1. licks       every lick onset from sync_<session>.mat (NIDAQ lick line -> Imec AP sample), or from --licks <file>
   2. template    +-10 ms of every channel around every lick, high-passed (Butterworth order 5, 300 Hz, zero-phase -- as the
                  sorter's input); the session's offset between lick marker and transient is estimated from the data, each
                  lick is aligned within +-3 ms, and the median over all licks is the per-channel template (real spikes
@@ -122,6 +122,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("session_dir"); ap.add_argument("out_parent")
     ap.add_argument("--window", nargs=2, type=float, default=None, help="test: only this time range (s)")
+    ap.add_argument("--licks", default=None, help="text file, one lick onset per line as an Imec AP sample index (instead of the "
+                    "session folder's sync file -- use when that copy may be outdated, e.g. before the 2026-09 lick-polarity fix)")
     a = ap.parse_args()
     src = Path(a.session_dir).resolve(); ses = src.name; final = Path(a.out_parent).resolve() / ses
     dst = final.with_name(ses + ".partial")                 # written here, renamed when complete (safe if the job is requeued)
@@ -130,10 +132,13 @@ def main():
     uv = float(M["imAiRangeMax"]) / float(M["imMaxInt"]) / float(M.get("imChan0apGain", 100)) * 1e6
     sh, y = geometry(M); blocks = sh * 2 + (y > SPLIT_UM)
     X = np.memmap(apf, dtype=np.int16, mode="r").reshape(-1, nsv); n_ap = X.shape[0]
-    sync = src / f"sync_{ses}.mat"
-    if not sync.exists():
-        sys.exit(f"sync file not found: {sync} (copy it from the server's 01_recordings/<mouse>/<session>/ folder)")
-    trig = lick_samples(sync, n_ap)
+    if a.licks:
+        trig = np.loadtxt(a.licks, dtype=np.int64).ravel(); trig = trig[(trig > 0) & (trig < n_ap - 1)]; lick_src = str(Path(a.licks).resolve())
+    else:
+        sync = src / f"sync_{ses}.mat"
+        if not sync.exists():
+            sys.exit(f"sync file not found: {sync} (copy it from the server's 01_recordings/<mouse>/<session>/ folder, or pass --licks)")
+        trig = lick_samples(sync, n_ap); lick_src = str(sync)
     log(f"{ses}: {n_ap / fs:.0f} s, {nch} channels, {len(np.unique(blocks))} electrode blocks, {len(trig)} lick onsets")
     if final.exists():
         sys.exit(f"output folder exists, not overwriting: {final}")
@@ -176,7 +181,7 @@ def main():
                                      peak_uV_after=float(np.abs(after[core][:, blocks == b]).max(0).mean() * uv))
                         for k, b in enumerate(est["blocks"])},
                 params=dict(pre_ms=PRE_MS, post_ms=POST_MS, jitter_ms=JIT_MS, core_ms=CORE_MS, taper_ms=TAPER_MS, highpass_hz=300,
-                            split_um=SPLIT_UM, source=str(src)), date=time.strftime("%Y-%m-%d %H:%M"))
+                            split_um=SPLIT_UM, source=str(src), licks_from=lick_src), date=time.strftime("%Y-%m-%d %H:%M"))
     rep = dst / "lick_clean"; rep.mkdir(exist_ok=True)                      # report files in their own subfolder
     (rep / "lick_clean_params.json").write_text(json.dumps(summ, indent=1))
     np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=est["starts"], amp=est["amp"], blocks=est["blocks"], shift=est["shift"])

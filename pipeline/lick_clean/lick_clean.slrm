@@ -1,7 +1,7 @@
 #!/bin/bash
 # Lick-contact artifact removal before sorting (lick_clean_raw.py): writes a cleaned copy of one session folder.
 # Submit from the SpikeSortingEF folder:
-#   sbatch pipeline/lick_clean/lick_clean.slrm <session_dir> <out_parent_dir>
+#   sbatch pipeline/lick_clean/lick_clean.slrm <session_dir> <out_parent_dir> [--licks <lick_onsets_file>]
 # e.g. sbatch pipeline/lick_clean/lick_clean.slrm \
 #        /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest/aind_input/20260805_EF405_g0 \
 #        /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest2/aind_input/todo
@@ -25,5 +25,5 @@ PY=/n/holylabs/LABS/bsabatini_lab/Users/eferenczi/envs/raw_extract/bin/python
 [ -x "$PY" ] || { echo "python env not found: $PY"; exit 1; }
 mkdir -p "$OUT"
 echo "[$(date)] $SRC -> $OUT on $(hostname)"
-"$PY" "${SLURM_SUBMIT_DIR:?}/pipeline/lick_clean/lick_clean_raw.py" "$SRC" "$OUT"
+"$PY" "${SLURM_SUBMIT_DIR:?}/pipeline/lick_clean/lick_clean_raw.py" "$SRC" "$OUT" "${@:3}"   # extra options, e.g. --licks <file>
 echo "[$(date)] done"
