@@ -8,8 +8,10 @@ cleaned COPY of a session folder in which that transient is subtracted at every 
                  sorter's input); the session's offset between lick marker and transient is estimated from the data, each
                  lick is aligned within +-3 ms, and the median over all licks is the per-channel template (real spikes
                  do not line up across licks, so the median ignores them); edges tapered to 0
-  3. fit         per lick and per electrode block (shank x deep / superficial), the least-squares size of the template
-                 (the transient's size varies between licks and blocks); a lick without a transient gets ~0
+  3. fit         per lick and per electrode block (shank x deep / superficial): --model lowrank (default) fits the k = 3 leading
+                 components of all licks' aligned snippets in that block (larger transients have a different shape, not only a
+                 larger size); --model template fits the least-squares size of the median template. A lick without a
+                 transient gets ~0 either way
   NOT cleaned: licks missing from the sync file's lick line. The LFP band is left untouched on purpose (the slow lick-locked
   wave may be partly neural); the original raw file stays the source for LFP extraction.
   4. subtract    amplitude x template at each aligned lick, from a copy of the .ap.bin (int16, rounded); only > 300 Hz content
@@ -108,7 +110,21 @@ def estimate(X, trig, fs, nch, blocks):
         Tb = T[cw][:, blocks == b]; den = float((Tb ** 2).sum())
         if den > 0:
             amp[:, k] = np.einsum("ntc,tc->n", A[:, cw][:, :, blocks == b], Tb) / den
-    return dict(template=T, starts=cen - pre + shift, amp=amp, blocks=ub, shift=shift, offset=offset, pre=pre, W=W), A
+    return dict(template=T, starts=cen - pre + shift, amp=amp, blocks=ub, shift=shift, offset=offset, pre=pre, W=W, tap=tap), A
+
+
+def lowrank(A, blocks, tap, k):
+    """per electrode block, the k leading spatio-temporal components of the aligned, tapered lick snippets and each lick's
+    coefficients: removal for lick i in block b = coef[b][i] @ basis[b] (W x n_ch_b). Captures that larger transients are not
+    just scaled copies of the average (2026-10-25: the 12 largest 0805 licks left 44 uV RMS with one template, 21 uV with k = 3
+    per block; injected spikes at the transient kept 97-100% of their amplitude)"""
+    basis, coef = {}, {}
+    for b in np.unique(blocks):
+        m = blocks == b; Xb = (A[:, :, m] * tap[None, :, None]).reshape(len(A), -1).astype(np.float64)
+        ev, U = np.linalg.eigh(Xb @ Xb.T); o = np.argsort(ev)[::-1][:k]
+        B = (U[:, o] / np.sqrt(np.maximum(ev[o], 1e-12))).T @ Xb                 # k x (W * n_ch_b), orthonormal rows
+        basis[int(b)] = B.astype(np.float32); coef[int(b)] = (Xb @ B.T).astype(np.float32)
+    return basis, coef
 
 
 def lick_average(X, starts, W, nch, fs, n=300):
@@ -122,6 +138,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("session_dir"); ap.add_argument("out_parent")
     ap.add_argument("--window", nargs=2, type=float, default=None, help="test: only this time range (s)")
+    ap.add_argument("--model", choices=["template", "lowrank"], default="lowrank",
+                    help="template: one median template, scaled per lick and block; lowrank: --k components per block (default)")
+    ap.add_argument("--k", type=int, default=3, help="components per electrode block for --model lowrank")
     ap.add_argument("--licks", default=None, help="text file, one lick onset per line as an Imec AP sample index (instead of the "
                     "session folder's sync file -- use when that copy may be outdated, e.g. before the 2026-09 lick-polarity fix)")
     a = ap.parse_args()
@@ -163,17 +182,28 @@ def main():
         shutil.copy2(apf.with_suffix(".meta"), out_bin.with_suffix(".meta")); Xin = X
     est, A = estimate(Xin, trig, fs, nch, blocks)
     bi = np.searchsorted(est["blocks"], blocks); T = est["template"]; W = est["W"]
+    if a.model == "lowrank":
+        basis, coef = lowrank(A, blocks, est["tap"], a.k); log(f"model: {a.k} components per electrode block")
+    else:
+        log("model: one template, scaled per lick and block")
+    del A
     before = lick_average(Xin, est["starts"], W, nch, fs)
     Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
     log("subtracting")
     for i, s in enumerate(est["starts"]):
-        seg = Y[s:s + W, :nch].astype(np.float32) - est["amp"][i, bi][None, :] * T
+        if a.model == "lowrank":
+            rem = np.zeros((W, nch), np.float32)
+            for b, B in basis.items():
+                m = blocks == b; rem[:, m] = (coef[b][i] @ B).reshape(W, m.sum())
+        else:
+            rem = est["amp"][i, bi][None, :] * T
+        seg = Y[s:s + W, :nch].astype(np.float32) - rem
         Y[s:s + W, :nch] = np.clip(np.round(seg), -32768, 32767).astype(np.int16)
     Y.flush(); del Y
     Z = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
-    summ = dict(session=ses, window_s=a.window, n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
+    summ = dict(session=ses, window_s=a.window, model=a.model, k=a.k if a.model == "lowrank" else None, n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
                 blocks={int(b): dict(n_ch=int((blocks == b).sum()), amp_median=float(np.median(est["amp"][:, k])),
                                      amp_p10=float(np.percentile(est["amp"][:, k], 10)), amp_p90=float(np.percentile(est["amp"][:, k], 90)),
@@ -184,7 +214,8 @@ def main():
                             split_um=SPLIT_UM, source=str(src), licks_from=lick_src), date=time.strftime("%Y-%m-%d %H:%M"))
     rep = dst / "lick_clean"; rep.mkdir(exist_ok=True)                      # report files in their own subfolder
     (rep / "lick_clean_params.json").write_text(json.dumps(summ, indent=1))
-    np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=est["starts"], amp=est["amp"], blocks=est["blocks"], shift=est["shift"])
+    np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=est["starts"], amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
+                        model=a.model, **({f"basis_{b}": B for b, B in basis.items()} | {f"coef_{b}": c for b, c in coef.items()} if a.model == "lowrank" else {}))
     for b, v in summ["blocks"].items():
         log(f"block {b} ({v['n_ch']} ch): fitted size median {v['amp_median']:.2f} (p10 {v['amp_p10']:.2f}, p90 {v['amp_p90']:.2f}); "
             f"lick average |peak| {v['peak_uV_before']:.1f} -> {v['peak_uV_after']:.1f} uV")
