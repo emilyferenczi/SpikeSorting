@@ -26,7 +26,10 @@ for s in "$@"; do
   [ -d "$SRC/$s" ] || { echo "  $s: raw folder missing in $SRC -- SKIPPED"; continue; }
   [ -f "$LICKS/${s}_lick_onsets_imec.txt" ] || { echo "  $s: $LICKS/${s}_lick_onsets_imec.txt missing -- SKIPPED"; continue; }
   while [ "$(squeue -u "$USER" -h -p test | wc -l)" -ge "$MAX_CLEAN" ]; do sleep 120; done
-  sbatch pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" --find detect --patch-ms 0.13
+  # memory from the session's lick count (~2.6 MB per transient for the snippets + ~4 GB): 6 GB for a sated day, ~23 GB
+  # for the busiest session, so the request stays close to what the job uses
+  nl=$(wc -l < "$LICKS/${s}_lick_onsets_imec.txt"); mem=$(( 4 + (nl * 3 + 999) / 1000 )); [ $mem -lt 6 ] && mem=6; [ $mem -gt 24 ] && mem=24
+  sbatch --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" --find detect --patch-ms 0.13
 done
 
 # 2. wait for every cleaning job of this user; refuse to sort if a copy is incomplete
