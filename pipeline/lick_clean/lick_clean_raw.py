@@ -279,8 +279,16 @@ def main():
         log(f"finding transients by shape (seed: {len(trig)} lick markers)")
         ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks)
         log("detection: " + ", ".join(f"{k} {v}" for k, v in det_rep.items() if k not in ("noise_uV_bits", "template_blocks")))
-        if len(ev) < 20:
-            sys.exit("fewer than 20 transients found: nothing cleaned (see the detection report above)")
+        if len(ev) < 20:   # e.g. a sated day with a few dozen licks: nothing to clean -- finish an UNCLEANED copy so the
+            # session is still sorted with the EF fixes, and say so in the report (2026-10-27)
+            rep = dst / "lick_clean"; rep.mkdir(exist_ok=True)
+            (rep / "lick_clean_params.json").write_text(json.dumps(dict(
+                session=ses, window_s=a.window, cleaned=False, find=a.find, detection=det_rep, n_detected=int(len(ev)),
+                reason="fewer than 20 transients found: copy left uncleaned", date=time.strftime("%Y-%m-%d %H:%M")), indent=1, default=float))
+            np.savez_compressed(rep / "lick_clean_fit.npz", detected=ev, detect_z=det_x.get("z", np.array([])),
+                                detect_r=det_x.get("r", np.array([])), markers=trig, cleaned=False)
+            dst.rename(final); log(f"only {len(ev)} transients found: copy left UNCLEANED (still sorted with the fixes); done:", final)
+            return
         marker_trig, trig = trig, ev
     est, A = estimate(Xin, trig, fs, nch, blocks, find_offset=(a.find == "markers"))
     bi = np.searchsorted(est["blocks"], blocks); T = est["template"]; W = est["W"]
@@ -309,7 +317,7 @@ def main():
     Z = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
-    summ = dict(session=ses, window_s=a.window, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
+    summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
                 patch_ms=a.patch_ms, patch_samples=hp,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
