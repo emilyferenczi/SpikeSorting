@@ -21,8 +21,9 @@ cleaned COPY of a session folder in which that transient is subtracted at every 
                  is subtracted, so the LFP band is unchanged; only +-10 ms around each lick is rewritten
   5. report      lick_clean/lick_clean_report.png + lick_clean_params.json + lick_clean_fit.npz in the output session folder: lick-triggered average before / after
                  per channel and per block, per-lick fitted sizes, alignment shifts; lick_clean/lick_clean_traces.png (2026-10-29): raw vs
-                 cleaned traces, a 2 s lick bout and three single transients, one channel per electrode block (--traces-only <raw
-                 session dir> <cleaned session dir> makes it for a session cleaned before)
+                 cleaned traces, a 2 s lick bout and three single transients, one channel per electrode block, saved as
+                 lick_clean_traces.npz (the cluster env has no matplotlib; plot_traces() draws it elsewhere); --traces-only <raw
+                 session dir> <cleaned session dir> makes it for a session cleaned before
 Usage:
   python lick_clean_raw.py <session_dir> <out_parent_dir>            # full session -> <out_parent_dir>/<session>/
   python lick_clean_raw.py <session_dir> <out_parent_dir> --window 740 1040    # test: only that time range (s), written as
@@ -222,46 +223,60 @@ def lick_average(X, starts, W, nch, fs, n=300):
     return S[ok].mean(0)
 
 
-def trace_report(X, Z, centres, fs, nch, blocks, T, uv, rep, ses):
+def trace_data(X, Z, centres, fs, nch, blocks, T, uv, ses):
     """raw vs cleaned traces (2026-10-29, Emily: 'example traces from cleaned vs non-cleaned data, zoomed out and zoomed in'):
-    one channel per electrode block (where the template is largest), high-passed 300 Hz as the sorter sees it.
-    Top: the 2 s with the most transients (a lick bout), raw grey / cleaned black, transient times marked.
-    Bottom: +-6 ms around three transients (typical size, large, the last of the bout), raw / cleaned / removed (raw - cleaned).
-    Writes lick_clean/lick_clean_traces.png."""
-    import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+    one channel per electrode block (where the template is largest), high-passed 300 Hz as the sorter sees it, in uV.
+    bout: the 2 s with the most transients (a lick bout); ex_*: +-6 ms around three transients (typical size, largest, the last
+    of the bout). numpy / scipy only (the cluster env has no matplotlib): saved as lick_clean_traces.npz, drawn by plot_traces()."""
     from scipy.signal import butter, sosfiltfilt
     sos = butter(5, 300, "highpass", fs=fs, output="sos"); pad = int(0.05 * fs)
-    ub = np.unique(blocks); chans = [int(np.flatnonzero(blocks == b)[np.argmax(np.ptp(T[:, blocks == b], axis=0))]) for b in ub]
+    ub = np.unique(blocks); chans = np.array([int(np.flatnonzero(blocks == b)[np.argmax(np.ptp(T[:, blocks == b], axis=0))]) for b in ub])
     def seg(A, s0, s1):
         a0, a1 = max(0, s0 - pad), min(A.shape[0], s1 + pad)
         x = sosfiltfilt(sos, np.asarray(A[a0:a1, :nch][:, chans], np.float64), axis=0) * uv
-        return x[s0 - a0:s0 - a0 + (s1 - s0)]
-    c = np.sort(np.asarray(centres)); win = int(2 * fs)
+        return x[s0 - a0:s0 - a0 + (s1 - s0)].astype(np.float32)
+    c = np.sort(np.asarray(centres, np.int64)); win = int(2 * fs)
     j = int(np.argmax(np.searchsorted(c, c + win) - np.arange(len(c)))); s0 = int(max(0, c[j] - 0.2 * fs)); s1 = s0 + win
-    raw, cln = seg(X, s0, s1), seg(Z, s0, s1); t = (np.arange(s1 - s0)) / fs
-    off = 1.2 * np.percentile(np.abs(raw), 99.9) if raw.size else 1.0
-    amp = np.array([np.ptp(seg(X, int(x) - 30, int(x) + 30)[:, 0]) for x in c[:: max(1, len(c) // 300)]])
-    sub = c[:: max(1, len(c) // 300)]
-    ex = [int(sub[np.argsort(amp)[len(amp) // 2]]), int(sub[np.argmax(amp)]), int(c[np.searchsorted(c, s1) - 1])]
-    fig = plt.figure(figsize=(16, 4 + 2.0 * len(chans))); gs = fig.add_gridspec(2, 3, height_ratios=[1.4, 1.0])
-    a = fig.add_subplot(gs[0, :])
+    sub = c[:: max(1, len(c) // 300)]; amp = np.array([np.ptp(seg(X, int(x) - 30, int(x) + 30)[:, 0]) for x in sub])
+    ex = np.array([sub[np.argsort(amp)[len(amp) // 2]], sub[np.argmax(amp)], c[np.searchsorted(c, s1) - 1]], np.int64); h = int(0.006 * fs)
+    D = dict(session=ses, fs=fs, chans=chans, chan_blocks=ub, bout_start=s0, bout_raw=seg(X, s0, s1), bout_clean=seg(Z, s0, s1),
+             bout_transients=c[(c >= s0) & (c < s1)] - s0, ex_centres=ex, ex_half=h)
+    for k, x in enumerate(ex):
+        D[f"ex{k}_raw"], D[f"ex{k}_clean"] = seg(X, int(x) - h, int(x) + h), seg(Z, int(x) - h, int(x) + h)
+    return D
+
+
+def plot_traces(D, out_png):
+    """draw lick_clean_traces data (also used on the analysis computer, where matplotlib exists)"""
+    import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+    fs = float(D["fs"]); chans, ub = np.asarray(D["chans"]), np.asarray(D["chan_blocks"]); raw, cln = np.asarray(D["bout_raw"]), np.asarray(D["bout_clean"])
+    t = np.arange(raw.shape[0]) / fs; off = 1.2 * np.percentile(np.abs(raw), 99.9) if raw.size else 1.0
+    fig = plt.figure(figsize=(16, 4 + 2.0 * len(chans))); gs = fig.add_gridspec(2, 3, height_ratios=[1.4, 1.0]); a = fig.add_subplot(gs[0, :])
     for k, ch in enumerate(chans):
         a.plot(t, raw[:, k] - k * off, color="0.65", lw=0.5); a.plot(t, cln[:, k] - k * off, color="k", lw=0.5)
         a.text(t[-1], -k * off, f" ch {ch} (block {ub[k]})", fontsize=7, va="center")
-    for x in c[(c >= s0) & (c < s1)]:
-        a.axvline((x - s0) / fs, color="#d62728", lw=0.4, alpha=0.5)
-    a.set_title(f"{ses}: 2 s of a lick bout ({int(((c >= s0) & (c < s1)).sum())} transients, red lines), high-passed 300 Hz -- raw grey, cleaned black", fontsize=9)
-    a.set_xlabel("s"); a.set_yticks([]); a.set_xlim(0, t[-1] * 1.08)
-    h = int(0.006 * fs)
-    for i, (x, nm) in enumerate(zip(ex, ("typical transient", "largest transient", "last of the bout"))):
-        a = fig.add_subplot(gs[1, i]); r, z = seg(X, x - h, x + h), seg(Z, x - h, x + h); tt = (np.arange(2 * h) - h) / fs * 1000
+    for x in np.asarray(D["bout_transients"]):
+        a.axvline(x / fs, color="#d62728", lw=0.4, alpha=0.5)
+    a.set_title(f"{D['session']}: 2 s of a lick bout ({len(D['bout_transients'])} transients, red lines), high-passed 300 Hz -- raw grey, cleaned black",
+                fontsize=9); a.set_xlabel("s"); a.set_yticks([]); a.set_xlim(0, t[-1] * 1.1)
+    h = int(D["ex_half"])
+    for i, nm in enumerate(("typical transient", "largest transient", "last of the bout")):
+        a = fig.add_subplot(gs[1, i]); r, z = np.asarray(D[f"ex{i}_raw"]), np.asarray(D[f"ex{i}_clean"]); tt = (np.arange(2 * h) - h) / fs * 1000
         o2 = 1.3 * max(np.abs(r).max(), 1.0)
         for k in range(len(chans)):
             a.plot(tt, r[:, k] - k * o2, color="0.65", lw=0.8); a.plot(tt, z[:, k] - k * o2, color="k", lw=0.8)
             a.plot(tt, (r - z)[:, k] - k * o2, color="#d62728", lw=0.6, alpha=0.8)
         a.set_title(f"{nm} (+-6 ms): raw grey, cleaned black, removed red", fontsize=8); a.set_xlabel("ms"); a.set_yticks([])
-    fig.text(0.01, 0.01, f"scale: zoomed-out channel spacing {off:.0f} uV", fontsize=7)
-    fig.tight_layout(); fig.savefig(rep / "lick_clean_traces.png", dpi=110); plt.close(fig)
+    fig.text(0.01, 0.005, f"zoomed-out channel spacing {off:.0f} uV; bottom panels: spacing 1.3 x the largest raw deflection", fontsize=7)
+    fig.tight_layout(); fig.savefig(out_png, dpi=110); plt.close(fig)
+
+
+def trace_report(X, Z, centres, fs, nch, blocks, T, uv, rep, ses):
+    D = trace_data(X, Z, centres, fs, nch, blocks, T, uv, ses); np.savez_compressed(rep / "lick_clean_traces.npz", **D)
+    try:
+        plot_traces(D, rep / "lick_clean_traces.png")
+    except ImportError:
+        log("trace data saved (lick_clean_traces.npz); figure drawn later -- no matplotlib here")
 
 
 def main():
