@@ -127,6 +127,7 @@ DET_RULES = ((15.0, 0.6), (10.0, 0.8))   # a transient: matched-filter score >= 
                                           # >= 0.6, or >= 10 with >= 0.8 (0805 window: all 280 such events at -2..-0.8 ms of a lick
                                           # marker; weaker ones mostly at random lags = noise)
 DET_SEED_Z = 8.0                          # seed: whitened common-mode energy >= 8^2 at the strongest point near the marker
+LOW_BLOCK_R = 0.5                         # low rule: a block 'has the shape' when its own correlation with its template is >= 0.5
 MP_SHAPE_R, MP_NULL_PCT = 0.6, 99.0       # marker pass (2026-10-29): shape r >= 0.6 and energy > 99th pct of random lick-free
                                           # windows (0611 / 0610 / 0825: 0% of random windows, 91-93% of detected licks pass;
                                           # 21 / 15 / 5% of undetected licks hide a ~90-130 uV transient)
@@ -141,7 +142,7 @@ def common_mode(X, a, b, nch, blocks, ub, sos, margin):
     return cm[a - a0:a - a0 + (b - a)].astype(np.float32)
 
 
-def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False):
+def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=None, template=None):
     """find lick-contact transients by their shape instead of trusting the lick markers' timing (2026-10-25: the lag between
     marker and transient differs between sessions and wanders within some, e.g. 20260825_EF405_g0 -55..-5 ms).
     1. seed: around (up to) 400 lick markers, the strongest event of the block common modes (whitened energy) within
@@ -150,6 +151,10 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False):
        shape correlation), the strongest one per DET_REFRACT_MS. Licks the NIDAQ missed are found too.
     3. (marker_pass) at lick markers still without a transient: the strongest common-mode event in the session's lag window,
        kept when it beats the same window at random lick-free times (99th percentile) and its shape r >= MP_SHAPE_R
+    low_rule = (Z, R, NB): also accept a matched-filter score >= Z with shape r >= R when the shape is on >= NB electrode blocks
+    (each block's own correlation >= LOW_BLOCK_R) -- a probe-wide event; a spike, on a few channels of one shank, moves no block
+    median. template = a whitened common-mode template from an earlier pass (the residual pass on the cleaned file, where the
+    transients a seed would need are gone): no seeding.
     Returns the transient centres (AP samples) and a report dict (marker match, lags, events away from markers)."""
     ub = np.unique(blocks); sos = butter(5, 300, "highpass", fs=fs, output="sos"); mg = int(MARGIN_MS * fs / 1000)
     h = int(DET_HALF_MS * fs / 1000); p0, p1 = (int(v * fs / 1000) for v in DET_SEED_MS); n = X.shape[0]
@@ -161,42 +166,52 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False):
         far = np.minimum(np.abs(cand - trig[np.clip(i - 1, 0, len(trig) - 1)]), np.abs(trig[np.clip(i, 0, len(trig) - 1)] - cand)) > 0.2 * fs
     Z = np.concatenate([common_mode(X, c, c + int(0.02 * fs), nch, blocks, ub, sos, mg) for c in cand[far][:200]])
     sig = np.median(np.abs(Z), 0) / 0.6745 + 1e-6
-    # 1. seed template
-    sel = trig[(trig + p0 - h - mg > 0) & (trig + p1 + h + mg < n)]; sel = sel[np.linspace(0, len(sel) - 1, min(400, len(sel))).astype(int)] if len(sel) else sel
+    # 1. seed template (or the given one)
     segs = []
+    if template is not None:
+        U = np.asarray(template, np.float64); sel = np.array([], np.int64)
+    else:
+        sel = trig[(trig + p0 - h - mg > 0) & (trig + p1 + h + mg < n)]; sel = sel[np.linspace(0, len(sel) - 1, min(400, len(sel))).astype(int)] if len(sel) else sel
     for t in sel:
         c = common_mode(X, t + p0 - h, t + p1 + h, nch, blocks, ub, sos, mg) / sig; e = (c[h:-h] ** 2).sum(1); k = int(np.argmax(e)) + h
         if e[k - h] >= DET_SEED_Z ** 2:
             segs.append(c[k - h:k + h + 1])
-    if len(segs) < 20:
-        return np.array([], np.int64), dict(n_seed=len(segs), note="fewer than 20 lick markers with a common-mode transient: nothing detected"), {}
-    S = np.stack(segs); U = np.median(S, 0)
-    for _ in range(2):                                    # realign each seed to the template, then re-median
-        S2 = []
-        for c in segs:
-            sc = [np.sum(np.roll(c, j, 0)[h // 2:-h // 2 or None] * U[h // 2:-h // 2 or None]) for j in range(-h // 2, h // 2 + 1)]
-            S2.append(np.roll(c, int(np.argmax(sc)) - h // 2, 0))
-        U = np.median(np.stack(S2), 0)
+    if template is None:
+        if len(segs) < 20:
+            return np.array([], np.int64), dict(n_seed=len(segs), note="fewer than 20 lick markers with a common-mode transient: nothing detected"), {}
+        S = np.stack(segs); U = np.median(S, 0)
+        for _ in range(2):                                    # realign each seed to the template, then re-median
+            S2 = []
+            for c in segs:
+                sc = [np.sum(np.roll(c, j, 0)[h // 2:-h // 2 or None] * U[h // 2:-h // 2 or None]) for j in range(-h // 2, h // 2 + 1)]
+                S2.append(np.roll(c, int(np.argmax(sc)) - h // 2, 0))
+            U = np.median(np.stack(S2), 0)
     u = U / np.linalg.norm(U)                              # whitened, unit-norm template (2h + 1) x n_blocks
     # 2. matched filter over the recording
-    C = int(chunk_s * fs); ev, evm, evr = [], [], []
+    C = int(chunk_s * fs); ev, evm, evr, evl = [], [], [], []; un = np.linalg.norm(u, axis=0) + 1e-9
     for a in range(mg + h, n - mg - h, C):
         b = min(a + C, n - mg - h); c = common_mode(X, a - h, b + h, nch, blocks, ub, sos, mg) / sig
-        m = sum(np.correlate(c[:, j], u[:, j], "valid") for j in range(len(ub)))                # len b - a
+        mb = np.stack([np.correlate(c[:, j], u[:, j], "valid") for j in range(len(ub))], 1); m = mb.sum(1)     # len b - a
         e = np.sqrt(np.convolve((c ** 2).sum(1), np.ones(2 * h + 1), "valid")) + 1e-6; r = m / e
         z = m / (np.median(np.abs(m)) / 0.6745 + 1e-6)
-        pk = np.flatnonzero(np.any([(z >= zt) & (r >= rt) for zt, rt in DET_RULES], 0))
+        main_ok = np.any([(z >= zt) & (r >= rt) for zt, rt in DET_RULES], 0); low_ok = np.zeros_like(main_ok)
+        if low_rule:
+            eb = np.sqrt(np.stack([np.convolve(c[:, j] ** 2, np.ones(2 * h + 1), "valid") for j in range(len(ub))], 1)) + 1e-6
+            nbk = ((mb / (eb * un)) >= LOW_BLOCK_R).sum(1)
+            low_ok = (z >= low_rule[0]) & (r >= low_rule[1]) & (nbk >= low_rule[2])
+        pk = np.flatnonzero(main_ok | low_ok)
         if len(pk):
             o = pk[np.argsort(-z[pk])]; keep = []
             for q in o:
                 if all(abs(q - k) > int(DET_REFRACT_MS * fs / 1000) for k in keep):
                     keep.append(q)
-            keep = np.sort(keep); ev.append(a + keep); evm.append(z[keep]); evr.append(r[keep])
+            keep = np.sort(keep); ev.append(a + keep); evm.append(z[keep]); evr.append(r[keep]); evl.append(~main_ok[keep])
     ev = np.concatenate(ev) if ev else np.array([], np.int64); evm = np.concatenate(evm) if evm else np.array([])
-    evr = np.concatenate(evr) if evr else np.array([])
+    evr = np.concatenate(evr) if evr else np.array([]); evl = np.concatenate(evl) if evl else np.array([], bool)
     # report: markers with a transient within DET_SEED_MS, their lags, transients away from every marker
     rep = dict(n_seed=len(segs), n_detected=int(len(ev)), n_markers=int(len(trig)), noise_uV_bits=sig.tolist(),
-               template_blocks=[int(b) for b in ub])
+               template_blocks=[int(b) for b in ub], low_rule=list(low_rule) if low_rule else None, n_low_rule_only=int(evl.sum()),
+               template_given=template is not None)
     if len(trig) and len(ev):
         j = np.searchsorted(ev, trig + p0); has = (j < len(ev)) & (ev[np.minimum(j, len(ev) - 1)] <= trig + p1)
         lag = (ev[np.minimum(j, len(ev) - 1)] - trig)[has] / fs * 1000
@@ -233,11 +248,12 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False):
                     kt.append(t_); kr.append(r_)
             mp = np.array(kt, np.int64); allv = np.concatenate([ev, mp]); o = np.argsort(allv, kind="stable")
             ev = allv[o]; evm = np.concatenate([evm, np.full(len(mp), np.nan)])[o]; evr = np.concatenate([evr, np.array(kr, float)])[o]
+            evl = np.concatenate([evl, np.zeros(len(mp), bool)])[o]
             j = np.searchsorted(ev, trig + p0); has2 = (j < len(ev)) & (ev[np.minimum(j, len(ev) - 1)] <= trig + p1)
             rep.update(marker_pass=dict(n_added=int(len(mp)), window_ms=[w0 / fs * 1000, w1 / fs * 1000], null_energy_p99=e99,
                                         markers_without_transient_before=int((~has).sum()), markers_without_transient_after=int((~has2).sum())),
                        n_detected=int(len(ev)), markers_with_transient=float(has2.mean()))
-    return ev.astype(np.int64), rep, dict(z=evm, r=evr, template=U * sig, marker_pass=mp)
+    return ev.astype(np.int64), rep, dict(z=evm, r=evr, template=U * sig, U_white=U, marker_pass=mp, low_only=evl)
 
 
 def code_version():
@@ -264,6 +280,21 @@ def lowrank(A, blocks, tap, k):
         B = (U[:, o] / np.sqrt(np.maximum(ev[o], 1e-12))).T @ Xb                 # k x (W * n_ch_b), orthonormal rows
         basis[int(b)] = B.astype(np.float32); coef[int(b)] = (Xb @ B.T).astype(np.float32)
     return basis, coef
+
+
+def project_events(X, cen, T, basis, blocks, tap, fs, nch):
+    """events of a later pass, fitted with the first pass's model: each event aligned to the template T within +-JIT_MS (as in
+    estimate()), its coefficients on each block's components (lowrank()). Returns the snippet starts and {block: coefficients}."""
+    pre, post = int(PRE_MS * fs / 1000), int(POST_MS * fs / 1000); J = int(JIT_MS * fs / 1000); W = pre + post
+    sos = butter(5, 300, "highpass", fs=fs, output="sos"); margin = int(MARGIN_MS * fs / 1000)
+    Xs, ok = snippets(X, cen, pre + J, post + J, margin, nch, sos); Xs = Xs[ok]; cen = cen[ok]
+    cw = slice(pre - int(CORE_MS * fs / 1000), pre + int(CORE_MS * fs / 1000)); Tc = T[cw]; best = np.full(len(Xs), -np.inf); shift = np.zeros(len(Xs), int)
+    for j in range(-J, J + 1):
+        sc = np.einsum("ntc,tc->n", Xs[:, J + j + cw.start:J + j + cw.stop], Tc); b = sc > best; best[b] = sc[b]; shift[b] = j
+    A = np.stack([Xs[i, J + shift[i]:J + shift[i] + W] for i in range(len(Xs))]) if len(Xs) else np.zeros((0, W, nch), np.float32)
+    coef = {b: ((A[:, :, blocks == b] * tap[None, :, None]).reshape(len(A), -1).astype(np.float64) @ B.T.astype(np.float64)).astype(np.float32)
+            for b, B in basis.items()}
+    return cen - pre + shift, coef
 
 
 def lick_average(X, starts, W, nch, fs, n=300):
@@ -368,6 +399,12 @@ def main():
                          "2026-10-29: 0.5 3")
     ap.add_argument("--marker-pass", action="store_true", help="with --find detect: a second pass at lick markers still without a "
                     "transient (strongest event in the session's lag window, energy > random 99th pct, shape r >= 0.6)")
+    ap.add_argument("--low-rule", nargs=3, type=float, default=None, metavar=("Z", "R", "NB"),
+                    help="with --find detect: also accept matched-filter score >= Z with shape r >= R on >= NB electrode blocks "
+                         "(a probe-wide event; spikes move no block median). Chosen with the injection test (2026-10-29)")
+    ap.add_argument("--residual-pass", action="store_true", help="after cleaning, detect again on the CLEANED file with the first "
+                    "pass's template (and --low-rule / --marker-pass), clean the new events (> 1 ms from every cleaned one) with the "
+                    "first pass's model: transients hidden by the 15-ms one-per-window rule or by a bigger one")
     ap.add_argument("--no-scan", action="store_true", help="skip the whole-recording scan (lick_clean_scan.py) at the end")
     ap.add_argument("--scan-only", action="store_true", help="for a session already cleaned: <session_dir> = the raw session folder, "
                     "<out_parent> = the CLEANED session folder; writes only lick_clean/lick_clean_scan.npz / .json")
@@ -429,7 +466,7 @@ def main():
     det_rep = None
     if a.find == "detect":
         log(f"finding transients by shape (seed: {len(trig)} lick markers)")
-        ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks, marker_pass=a.marker_pass)
+        ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks, marker_pass=a.marker_pass, low_rule=tuple(a.low_rule) if a.low_rule else None)
         log("detection: " + ", ".join(f"{k} {v}" for k, v in det_rep.items() if k not in ("noise_uV_bits", "template_blocks")))
         if len(ev) < 20:   # e.g. a sated day with a few dozen licks: nothing to clean -- finish an UNCLEANED copy so the
             # session is still sorted with the EF fixes, and say so in the report (2026-10-27)
@@ -467,13 +504,15 @@ def main():
         sos_sc = butter(5, 300, "highpass", fs=fs, output="sos"); lo_sc, hi_sc = est["pre"] - sc0 - nt, est["pre"] + sc1 + nt + 1
         wsc = np.ones(hi_sc - lo_sc, np.float32); rr = 0.5 - 0.5 * np.cos(np.pi * np.arange(1, nt + 1) / (nt + 1)); wsc[:nt] = rr; wsc[-nt:] = rr[::-1]
         log(f"  then each block's median (high-passed, {int(good.sum())} working channels) subtracted from -{sc[0]} to +{sc[1]} ms")
-    for i, s in enumerate(est["starts"]):
-        if a.model == "lowrank":
-            rem = np.zeros((W, nch), np.float32)
-            for b, B in basis.items():
-                m = blocks == b; rem[:, m] = (coef[b][i] @ B).reshape(W, m.sum())
-        else:
-            rem = est["amp"][i, bi][None, :] * T
+    def rem_lowrank(cf, i):
+        rem = np.zeros((W, nch), np.float32)
+        for b, B in basis.items():
+            m = blocks == b; rem[:, m] = (cf[b][i] @ B).reshape(W, m.sum())
+        return rem
+
+    def clean_events(Y, starts, rem_of):
+      for i, s in enumerate(starts):
+        rem = rem_of(i)
         seg = Y[s:s + W, :nch].astype(np.float32) - rem
         if hp:   # straight line over the transient's peak (what the model cannot follow when the transient is 2-3 samples wide)
             c = est["pre"]; a0, a1 = c - hp - 1, c + hp + 1; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
@@ -485,12 +524,33 @@ def main():
             for ci in blk:
                 seg[lo_sc:hi_sc, ci] -= (wsc * np.median(hx[lo_sc:hi_sc][:, ci], 1))[:, None]
         Y[s:s + W, :nch] = np.clip(np.round(seg), -32768, 32767).astype(np.int16)
+
+    clean_events(Y, est["starts"], (lambda i: rem_lowrank(coef, i)) if a.model == "lowrank" else (lambda i: est["amp"][i, bi][None, :] * T))
     Y.flush(); del Y
+    starts_all, res_rep, starts2 = np.asarray(est["starts"]), None, np.array([], np.int64)
+    if a.residual_pass and a.find == "detect" and a.model == "lowrank":
+        Yr = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
+        log("residual pass: detecting again on the cleaned file (first pass's template)")
+        ev2, rep2, x2 = detect(Yr, marker_trig, fs, nch, blocks, marker_pass=a.marker_pass, low_rule=tuple(a.low_rule) if a.low_rule else None,
+                               template=det_x["U_white"])
+        c1 = np.sort(np.asarray(est["starts"]) + est["pre"]); j = np.searchsorted(c1, ev2)
+        d = np.minimum(np.abs(ev2 - c1[np.clip(j - 1, 0, len(c1) - 1)]), np.abs(c1[np.clip(j, 0, len(c1) - 1)] - ev2)) if len(c1) else np.full(len(ev2), 10 ** 9)
+        new = ev2[d > int(0.001 * fs)]
+        res_rep = dict(n_detected_on_cleaned=int(len(ev2)), n_new=int(len(new)), n_low_rule_only=rep2.get("n_low_rule_only"),
+                       marker_pass=rep2.get("marker_pass"))
+        log(f"residual pass: {len(ev2)} events on the cleaned file, {len(new)} new (> 1 ms from every cleaned transient)")
+        if len(new):
+            starts2, coef2 = project_events(Yr, new, T, basis, blocks, est["tap"], fs, nch); del Yr
+            Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
+            clean_events(Y, starts2, lambda i: rem_lowrank(coef2, i)); Y.flush(); del Y
+            starts_all = np.sort(np.concatenate([starts_all, starts2]))
     Z = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
                 patch_ms=a.patch_ms, patch_samples=hp, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
+                low_rule=a.low_rule, residual_pass=res_rep, n_cleaned_total=int(len(starts_all)),
+                patched_ms_total=float(len(starts_all) * (2 * hp + 1) / fs * 1000) if hp else 0.0,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
                 blocks={int(b): dict(n_ch=int((blocks == b).sum()), amp_median=float(np.median(est["amp"][:, k])),
@@ -502,7 +562,7 @@ def main():
                             split_um=SPLIT_UM, source=str(src), licks_from=lick_src), date=time.strftime("%Y-%m-%d %H:%M"))
     rep = dst / "lick_clean"; rep.mkdir(exist_ok=True)                      # report files in their own subfolder
     (rep / "lick_clean_params.json").write_text(json.dumps(summ, indent=1))
-    np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=est["starts"], amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
+    np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=starts_all, starts_pass1=est["starts"], starts_residual=starts2, amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
                         model=a.model, find=a.find, **({f"basis_{b}": B for b, B in basis.items()} | {f"coef_{b}": c for b, c in coef.items()} if a.model == "lowrank" else {}),
                         **(dict(detected=trig, detect_z=det_x["z"], detect_r=det_x["r"], detect_template=det_x["template"], markers=marker_trig,
                                 marker_pass=det_x.get("marker_pass", np.array([], np.int64)))
