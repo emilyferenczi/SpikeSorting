@@ -142,7 +142,7 @@ def common_mode(X, a, b, nch, blocks, ub, sos, margin):
     return cm[a - a0:a - a0 + (b - a)].astype(np.float32)
 
 
-def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=None, template=None):
+def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=None, template=None, large_rule=None):
     """find lick-contact transients by their shape instead of trusting the lick markers' timing (2026-10-25: the lag between
     marker and transient differs between sessions and wanders within some, e.g. 20260825_EF405_g0 -55..-5 ms).
     1. seed: around (up to) 400 lick markers, the strongest event of the block common modes (whitened energy) within
@@ -155,6 +155,9 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
     (each block's own correlation >= LOW_BLOCK_R) -- a probe-wide event; a spike, on a few channels of one shank, moves no block
     median. template = a whitened common-mode template from an earlier pass (the residual pass on the cleaned file, where the
     transients a seed would need are gone): no seeding.
+    large_rule = (E, BZ, NB): ALSO, regardless of shape, events whose whitened common-mode energy is >= E with >= BZ x noise on
+    >= NB blocks at the same sample (2026-10-29: big, differently shaped lick-contact transients -- 1.7-2.2 mV, shape r ~0.5 --
+    in stretches of 0604 EF401 and 1015 EF407 that the template rules miss); returned separately (det_x['large'])
     Returns the transient centres (AP samples) and a report dict (marker match, lags, events away from markers)."""
     ub = np.unique(blocks); sos = butter(5, 300, "highpass", fs=fs, output="sos"); mg = int(MARGIN_MS * fs / 1000)
     h = int(DET_HALF_MS * fs / 1000); p0, p1 = (int(v * fs / 1000) for v in DET_SEED_MS); n = X.shape[0]
@@ -188,7 +191,7 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
             U = np.median(np.stack(S2), 0)
     u = U / np.linalg.norm(U)                              # whitened, unit-norm template (2h + 1) x n_blocks
     # 2. matched filter over the recording
-    C = int(chunk_s * fs); ev, evm, evr, evl = [], [], [], []; un = np.linalg.norm(u, axis=0) + 1e-9
+    C = int(chunk_s * fs); ev, evm, evr, evl, lg = [], [], [], [], []; un = np.linalg.norm(u, axis=0) + 1e-9
     for a in range(mg + h, n - mg - h, C):
         b = min(a + C, n - mg - h); c = common_mode(X, a - h, b + h, nch, blocks, ub, sos, mg) / sig
         mb = np.stack([np.correlate(c[:, j], u[:, j], "valid") for j in range(len(ub))], 1); m = mb.sum(1)     # len b - a
@@ -206,12 +209,24 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
                 if all(abs(q - k) > int(DET_REFRACT_MS * fs / 1000) for k in keep):
                     keep.append(q)
             keep = np.sort(keep); ev.append(a + keep); evm.append(z[keep]); evr.append(r[keep]); evl.append(~main_ok[keep])
+        if large_rule:   # shape-free: big on most blocks at once (instantaneous whitened common mode)
+            ci = c[h:h + (b - a)]; E_ = np.sqrt((ci ** 2).sum(1)); nbz = (np.abs(ci) >= large_rule[1]).sum(1)
+            q = np.flatnonzero((E_ >= large_rule[0]) & (nbz >= large_rule[2]))
+            kl = []
+            for x in q[np.argsort(-E_[q])]:
+                if all(abs(x - k) > int(DET_REFRACT_MS * fs / 1000) for k in kl):
+                    kl.append(x)
+            lg.append(a + np.sort(np.array(kl, np.int64)))
     ev = np.concatenate(ev) if ev else np.array([], np.int64); evm = np.concatenate(evm) if evm else np.array([])
     evr = np.concatenate(evr) if evr else np.array([]); evl = np.concatenate(evl) if evl else np.array([], bool)
+    large = np.concatenate(lg).astype(np.int64) if lg else np.array([], np.int64)
+    if len(large) and len(ev):   # keep only large events > 3 ms from every template detection (those are cleaned with the model)
+        j = np.searchsorted(ev, large); d = np.minimum(np.abs(large - ev[np.clip(j - 1, 0, len(ev) - 1)]), np.abs(ev[np.clip(j, 0, len(ev) - 1)] - large))
+        large = large[d > int(0.003 * fs)]
     # report: markers with a transient within DET_SEED_MS, their lags, transients away from every marker
     rep = dict(n_seed=len(segs), n_detected=int(len(ev)), n_markers=int(len(trig)), noise_uV_bits=sig.tolist(),
                template_blocks=[int(b) for b in ub], low_rule=list(low_rule) if low_rule else None, n_low_rule_only=int(evl.sum()),
-               template_given=template is not None)
+               template_given=template is not None, large_rule=list(large_rule) if large_rule else None, n_large=int(len(large)))
     if len(trig) and len(ev):
         j = np.searchsorted(ev, trig + p0); has = (j < len(ev)) & (ev[np.minimum(j, len(ev) - 1)] <= trig + p1)
         lag = (ev[np.minimum(j, len(ev) - 1)] - trig)[has] / fs * 1000
@@ -253,7 +268,10 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
             rep.update(marker_pass=dict(n_added=int(len(mp)), window_ms=[w0 / fs * 1000, w1 / fs * 1000], null_energy_p99=e99,
                                         markers_without_transient_before=int((~has).sum()), markers_without_transient_after=int((~has2).sum())),
                        n_detected=int(len(ev)), markers_with_transient=float(has2.mean()))
-    return ev.astype(np.int64), rep, dict(z=evm, r=evr, template=U * sig, U_white=U, marker_pass=mp, low_only=evl)
+    if len(large) and len(mp):   # a marker-pass event at a large one: the large path cleans it
+        j = np.searchsorted(large, ev); d = np.minimum(np.abs(ev - large[np.clip(j - 1, 0, len(large) - 1)]), np.abs(large[np.clip(j, 0, len(large) - 1)] - ev))
+        drop = np.isin(ev, mp) & (d <= int(0.003 * fs)); ev, evm, evr, evl = ev[~drop], evm[~drop], evr[~drop], evl[~drop]
+    return ev.astype(np.int64), rep, dict(z=evm, r=evr, template=U * sig, U_white=U, marker_pass=mp, low_only=evl, large=large)
 
 
 def code_version():
@@ -402,6 +420,10 @@ def main():
     ap.add_argument("--low-rule", nargs=3, type=float, default=None, metavar=("Z", "R", "NB"),
                     help="with --find detect: also accept matched-filter score >= Z with shape r >= R on >= NB electrode blocks "
                          "(a probe-wide event; spikes move no block median). Chosen with the injection test (2026-10-29)")
+    ap.add_argument("--large-rule", nargs=3, type=float, default=None, metavar=("E", "BZ", "NB"),
+                    help="with --find detect: also clean events, whatever their shape, with whitened common-mode energy >= E and >= BZ x "
+                         "noise on >= NB blocks at once (big, differently shaped contact transients); each is removed with its own "
+                         "block common mode scaled per channel (-1..+3 ms), then the patch / block median. 2026-10-29: 30 8 3")
     ap.add_argument("--residual-pass", action="store_true", help="after cleaning, detect again on the CLEANED file with the first "
                     "pass's template (and --low-rule / --marker-pass), clean the new events (> 1 ms from every cleaned one) with the "
                     "first pass's model: transients hidden by the 15-ms one-per-window rule or by a bigger one")
@@ -466,7 +488,8 @@ def main():
     det_rep = None
     if a.find == "detect":
         log(f"finding transients by shape (seed: {len(trig)} lick markers)")
-        ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks, marker_pass=a.marker_pass, low_rule=tuple(a.low_rule) if a.low_rule else None)
+        ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks, marker_pass=a.marker_pass, low_rule=tuple(a.low_rule) if a.low_rule else None,
+                                    large_rule=tuple(a.large_rule) if a.large_rule else None)
         log("detection: " + ", ".join(f"{k} {v}" for k, v in det_rep.items() if k not in ("noise_uV_bits", "template_blocks")))
         if len(ev) < 20:   # e.g. a sated day with a few dozen licks: nothing to clean -- finish an UNCLEANED copy so the
             # session is still sorted with the EF fixes, and say so in the report (2026-10-27)
@@ -526,14 +549,31 @@ def main():
         Y[s:s + W, :nch] = np.clip(np.round(seg), -32768, 32767).astype(np.int16)
 
     clean_events(Y, est["starts"], (lambda i: rem_lowrank(coef, i)) if a.model == "lowrank" else (lambda i: est["amp"][i, bi][None, :] * T))
+    large = np.asarray(det_x.get("large", []), np.int64) if a.find == "detect" else np.array([], np.int64)
+    large = large[(large - est["pre"] - int(0.01 * fs) > 0) & (large + W + int(0.01 * fs) < Y.shape[0])]
+    if len(large):   # each removed with its own block common mode scaled per channel (shape-free), then the same patch / median
+        import lick_clean_scan
+        goodL = lick_clean_scan.working_channels(Xin, nch, fs); blkL = [np.flatnonzero((blocks == b) & goodL) for b in np.unique(blocks)]
+        sosL = butter(5, 300, "highpass", fs=fs, output="sos"); mgL = int(0.01 * fs); l0, l1 = int(0.001 * fs), int(0.003 * fs); ntL = 6
+        wL = np.ones(l0 + l1 + 1, np.float32); rL = 0.5 - 0.5 * np.cos(np.pi * np.arange(1, ntL + 1) / (ntL + 1)); wL[:ntL] = rL; wL[-ntL:] = rL[::-1]
+        def rem_large(i):
+            s = large[i] - est["pre"]; e0, e1 = s - mgL, s + W + mgL
+            hx = sosfiltfilt(sosL, np.asarray(Y[e0:e1, :nch], np.float32), axis=0)[mgL:mgL + W]; rem = np.zeros((W, nch), np.float32)
+            c = est["pre"]; sl = slice(c - l0, c + l1 + 1)
+            for ci in blkL:
+                m_ = np.median(hx[sl][:, ci], 1); g = (hx[sl][:, ci] * m_[:, None]).sum(0) / ((m_ ** 2).sum() + 1e-9)
+                rem[sl, ci] = (wL * m_)[:, None] * g[None, :]
+            return rem
+        log(f"large events (shape-free rule): {len(large)}, each removed with its own per-channel-scaled block common mode")
+        clean_events(Y, large - est["pre"], rem_large)
     Y.flush(); del Y
-    starts_all, res_rep, starts2 = np.asarray(est["starts"]), None, np.array([], np.int64)
+    starts_all, res_rep, starts2 = np.sort(np.concatenate([np.asarray(est["starts"]), large - est["pre"]])), None, np.array([], np.int64)
     if a.residual_pass and a.find == "detect" and a.model == "lowrank":
         Yr = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
         log("residual pass: detecting again on the cleaned file (first pass's template)")
         ev2, rep2, x2 = detect(Yr, marker_trig, fs, nch, blocks, marker_pass=a.marker_pass, low_rule=tuple(a.low_rule) if a.low_rule else None,
                                template=det_x["U_white"])
-        c1 = np.sort(np.asarray(est["starts"]) + est["pre"]); j = np.searchsorted(c1, ev2)
+        c1 = np.sort(starts_all + est["pre"]); j = np.searchsorted(c1, ev2)
         d = np.minimum(np.abs(ev2 - c1[np.clip(j - 1, 0, len(c1) - 1)]), np.abs(c1[np.clip(j, 0, len(c1) - 1)] - ev2)) if len(c1) else np.full(len(ev2), 10 ** 9)
         new = ev2[d > int(0.001 * fs)]
         res_rep = dict(n_detected_on_cleaned=int(len(ev2)), n_new=int(len(new)), n_low_rule_only=rep2.get("n_low_rule_only"),
@@ -549,7 +589,7 @@ def main():
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
                 patch_ms=a.patch_ms, patch_samples=hp, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
-                low_rule=a.low_rule, residual_pass=res_rep, n_cleaned_total=int(len(starts_all)),
+                low_rule=a.low_rule, large_rule=a.large_rule, n_large=int(len(large)), residual_pass=res_rep, n_cleaned_total=int(len(starts_all)),
                 patched_ms_total=float(len(starts_all) * (2 * hp + 1) / fs * 1000) if hp else 0.0,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
@@ -565,7 +605,8 @@ def main():
     np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=starts_all, starts_pass1=est["starts"], starts_residual=starts2, amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
                         model=a.model, find=a.find, **({f"basis_{b}": B for b, B in basis.items()} | {f"coef_{b}": c for b, c in coef.items()} if a.model == "lowrank" else {}),
                         **(dict(detected=trig, detect_z=det_x["z"], detect_r=det_x["r"], detect_template=det_x["template"], markers=marker_trig,
-                                marker_pass=det_x.get("marker_pass", np.array([], np.int64)), detect_low_only=det_x.get("low_only", np.array([], bool)))
+                                marker_pass=det_x.get("marker_pass", np.array([], np.int64)), detect_low_only=det_x.get("low_only", np.array([], bool)),
+                                large=large)
                            if a.find == "detect" else {}))
     for b, v in summ["blocks"].items():
         log(f"block {b} ({v['n_ch']} ch): fitted size median {v['amp_median']:.2f} (p10 {v['amp_p10']:.2f}, p90 {v['amp_p90']:.2f}); "
