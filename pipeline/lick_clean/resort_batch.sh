@@ -25,6 +25,8 @@ CLEAN_PARTITION=${CLEAN_PARTITION:-kempner_interactive}; MAX_CLEAN=${MAX_CLEAN:-
 # 2026-10-29: copies slow down when several jobs share a node (40-63 min to copy 56-68 GB with 5 jobs on one node, vs ~15-20 min
 # alone), so a session can need more than the slrm's 2.5 h: CLEAN_TIME sets the limit per job (default 6 h)
 CLEAN_TIME=${CLEAN_TIME:-06:00:00}
+# cleaning options (2026-10-29: one place; the v2 pilot tests adding --second-contact-ms 0.5 3 --marker-pass)
+CLEAN_OPTS=${CLEAN_OPTS:---find detect --patch-ms 0.13}
 for s in "$@"; do
   if [ -d "$TODO/$s" ] || [ -d "$DONE/$s" ]; then echo "  $s: cleaned copy exists"; continue; fi
   [ -d "$SRC/$s" ] || { echo "  $s: raw folder missing in $SRC -- SKIPPED"; continue; }
@@ -32,8 +34,8 @@ for s in "$@"; do
   while [ "$(squeue -u "$USER" -h -p "$CLEAN_PARTITION" | wc -l)" -ge "$MAX_CLEAN" ]; do sleep 120; done
   # memory from the session's lick count (~2.6 MB per transient for the snippets + ~4 GB): 6 GB for a sated day, ~23 GB
   # for the busiest session, so the request stays close to what the job uses
-  nl=$(wc -l < "$LICKS/${s}_lick_onsets_imec.txt"); mem=$(( 4 + (nl * 3 + 999) / 1000 )); [ $mem -lt 6 ] && mem=6; [ $mem -gt 24 ] && mem=24
-  sbatch --partition="$CLEAN_PARTITION" --time="$CLEAN_TIME" --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" --find detect --patch-ms 0.13
+  nl=$(wc -l < "$LICKS/${s}_lick_onsets_imec.txt"); mem=$(( 4 + (nl * 3 + 999) / 1000 )); [ $mem -lt 6 ] && mem=6; [ $mem -gt 24 ] && mem=24; mem=$((mem + 8))   # + 8 GB: whole-recording scan (2026-10-29)
+  sbatch --partition="$CLEAN_PARTITION" --time="$CLEAN_TIME" --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" $CLEAN_OPTS
 done
 
 # 2. wait for every cleaning job of this user; refuse to sort if a copy is incomplete

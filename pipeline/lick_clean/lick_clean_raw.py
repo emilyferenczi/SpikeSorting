@@ -127,6 +127,9 @@ DET_RULES = ((15.0, 0.6), (10.0, 0.8))   # a transient: matched-filter score >= 
                                           # >= 0.6, or >= 10 with >= 0.8 (0805 window: all 280 such events at -2..-0.8 ms of a lick
                                           # marker; weaker ones mostly at random lags = noise)
 DET_SEED_Z = 8.0                          # seed: whitened common-mode energy >= 8^2 at the strongest point near the marker
+MP_SHAPE_R, MP_NULL_PCT = 0.6, 99.0       # marker pass (2026-10-29): shape r >= 0.6 and energy > 99th pct of random lick-free
+                                          # windows (0611 / 0610 / 0825: 0% of random windows, 91-93% of detected licks pass;
+                                          # 21 / 15 / 5% of undetected licks hide a ~90-130 uV transient)
 
 
 def common_mode(X, a, b, nch, blocks, ub, sos, margin):
@@ -138,13 +141,15 @@ def common_mode(X, a, b, nch, blocks, ub, sos, margin):
     return cm[a - a0:a - a0 + (b - a)].astype(np.float32)
 
 
-def detect(X, trig, fs, nch, blocks, chunk_s=4.0):
+def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False):
     """find lick-contact transients by their shape instead of trusting the lick markers' timing (2026-10-25: the lag between
     marker and transient differs between sessions and wanders within some, e.g. 20260825_EF405_g0 -55..-5 ms).
     1. seed: around (up to) 400 lick markers, the strongest event of the block common modes (whitened energy) within
        DET_SEED_MS; their median, aligned, is the session's common-mode template (+-DET_HALF_MS, every block)
     2. matched filter of that template over the whole recording; a transient = a point passing DET_RULES (score in robust SD,
        shape correlation), the strongest one per DET_REFRACT_MS. Licks the NIDAQ missed are found too.
+    3. (marker_pass) at lick markers still without a transient: the strongest common-mode event in the session's lag window,
+       kept when it beats the same window at random lick-free times (99th percentile) and its shape r >= MP_SHAPE_R
     Returns the transient centres (AP samples) and a report dict (marker match, lags, events away from markers)."""
     ub = np.unique(blocks); sos = butter(5, 300, "highpass", fs=fs, output="sos"); mg = int(MARGIN_MS * fs / 1000)
     h = int(DET_HALF_MS * fs / 1000); p0, p1 = (int(v * fs / 1000) for v in DET_SEED_MS); n = X.shape[0]
@@ -199,7 +204,52 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0):
         rep.update(markers_with_transient=float(has.mean()), lag_ms_median=float(np.median(lag)) if len(lag) else None,
                    lag_ms_p5_p95=[float(v) for v in np.percentile(lag, [5, 95])] if len(lag) else None,
                    n_away_from_markers=int(away.sum()), z_median=float(np.median(evm)), r_median=float(np.median(evr)))
-    return ev.astype(np.int64), rep, dict(z=evm, r=evr, template=U * sig)
+    mp = np.array([], np.int64)
+    if marker_pass and len(trig) and len(ev):
+        j = np.searchsorted(ev, trig + p0); has = (j < len(ev)) & (ev[np.minimum(j, len(ev) - 1)] <= trig + p1)
+        if has.sum() >= 20:
+            lagv = ev[np.minimum(j, len(ev) - 1)][has] - trig[has]; m2 = int(2e-3 * fs)
+            w0, w1 = int(np.percentile(lagv, 5)) - m2, int(np.percentile(lagv, 95)) + m2
+
+            def best(t):
+                c = common_mode(X, t + w0 - h, t + w1 + h + 1, nch, blocks, ub, sos, mg) / sig
+                e = np.sqrt((c ** 2).sum(1)); k = int(np.argmax(e[h:-h])) + h; sg = c[k - h:k + h + 1]
+                return float(e[k]), float((sg * u).sum() / (np.linalg.norm(sg) + 1e-9)), int(t + w0 - h + k)
+            lo, hi = mg + h - w0 + 1, n - mg - h - w1 - 2
+            allev = np.sort(np.concatenate([trig, ev])); cand = rng.integers(lo, hi, 3000); i2 = np.searchsorted(allev, cand)
+            far = np.minimum(np.abs(cand - allev[np.clip(i2 - 1, 0, len(allev) - 1)]), np.abs(allev[np.clip(i2, 0, len(allev) - 1)] - cand)) > 0.2 * fs
+            e99 = float(np.percentile([best(int(t))[0] for t in cand[far][:300]], MP_NULL_PCT))
+            found = []
+            for m_ in trig[~has]:
+                if lo <= m_ < hi:
+                    e_, r_, t_ = best(int(m_))
+                    if e_ > e99 and r_ >= MP_SHAPE_R:
+                        found.append((t_, e_, r_))
+            ref = int(DET_REFRACT_MS * fs / 1000); kt, kr = [], []
+            for t_, e_, r_ in sorted(found):
+                q = np.searchsorted(ev, t_)
+                d_ev = min(abs(t_ - ev[q - 1]) if q > 0 else 10 ** 9, abs(ev[q] - t_) if q < len(ev) else 10 ** 9)
+                if d_ev > ref and (not kt or t_ - kt[-1] > ref):
+                    kt.append(t_); kr.append(r_)
+            mp = np.array(kt, np.int64); allv = np.concatenate([ev, mp]); o = np.argsort(allv, kind="stable")
+            ev = allv[o]; evm = np.concatenate([evm, np.full(len(mp), np.nan)])[o]; evr = np.concatenate([evr, np.array(kr, float)])[o]
+            j = np.searchsorted(ev, trig + p0); has2 = (j < len(ev)) & (ev[np.minimum(j, len(ev) - 1)] <= trig + p1)
+            rep.update(marker_pass=dict(n_added=int(len(mp)), window_ms=[w0 / fs * 1000, w1 / fs * 1000], null_energy_p99=e99,
+                                        markers_without_transient_before=int((~has).sum()), markers_without_transient_after=int((~has2).sum())),
+                       n_detected=int(len(ev)), markers_with_transient=float(has2.mean()))
+    return ev.astype(np.int64), rep, dict(z=evm, r=evr, template=U * sig, marker_pass=mp)
+
+
+def code_version():
+    """git commit of this folder (+dirty), recorded in every report"""
+    import subprocess
+    d = str(Path(__file__).resolve().parent)
+    try:
+        h = subprocess.run(["git", "-C", d, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=20).stdout.strip()
+        dirty = subprocess.run(["git", "-C", d, "status", "--porcelain", "--", "."], capture_output=True, text=True, timeout=20).stdout.strip()
+        return (h + ("+dirty" if dirty else "")) or None
+    except Exception:
+        return None
 
 
 def lowrank(A, blocks, tap, k):
@@ -311,7 +361,20 @@ def main():
                     "session folder's sync file -- use when that copy may be outdated, e.g. before the 2026-09 lick-polarity fix)")
     ap.add_argument("--traces-only", action="store_true", help="for a session already cleaned: <session_dir> = the raw session folder, "
                     "<out_parent> = the CLEANED session folder; writes only lick_clean/lick_clean_traces.png into it")
+    ap.add_argument("--second-contact-ms", nargs=2, type=float, default=None, metavar=("PRE", "POST"),
+                    help="after the subtraction and the patch, subtract each electrode block's median over its working channels "
+                         "(high-passed, cosine edges) from PRE ms before to POST ms after each transient -- takes out second contacts "
+                         "and what every channel of a block still shares, keeps what is local to a few channels (spikes keep ~97%%). "
+                         "2026-10-29: 0.5 3")
+    ap.add_argument("--marker-pass", action="store_true", help="with --find detect: a second pass at lick markers still without a "
+                    "transient (strongest event in the session's lag window, energy > random 99th pct, shape r >= 0.6)")
+    ap.add_argument("--no-scan", action="store_true", help="skip the whole-recording scan (lick_clean_scan.py) at the end")
+    ap.add_argument("--scan-only", action="store_true", help="for a session already cleaned: <session_dir> = the raw session folder, "
+                    "<out_parent> = the CLEANED session folder; writes only lick_clean/lick_clean_scan.npz / .json")
     a = ap.parse_args()
+    if a.scan_only:
+        import lick_clean_scan
+        sys.argv = [sys.argv[0], a.session_dir, a.out_parent]; lick_clean_scan.main(); return
     if a.traces_only:
         src, cl = Path(a.session_dir).resolve(), Path(a.out_parent).resolve(); ses = src.name
         apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = read_meta(apf.with_suffix(".meta"))
@@ -358,13 +421,14 @@ def main():
         M2 = re.sub(r"fileSizeBytes=\d+", f"fileSizeBytes={(s1 - s0) * nsv * 2}", M2); M2 = re.sub(r"fileTimeSecs=[\d.]+", f"fileTimeSecs={(s1 - s0) / fs}", M2)
         out_bin.with_suffix(".meta").write_text(M2)
         trig = trig[(trig > s0 + fs) & (trig < s1 - fs)] - s0; Xin = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
+        Xraw = X[s0:s1]   # the window copy is cleaned in place: the raw side of the trace figure and the scan reads the source
     else:
         log(f"copying the AP binary ({apf.stat().st_size / 1e9:.1f} GB)"); shutil.copyfile(apf, out_bin)
-        shutil.copy2(apf.with_suffix(".meta"), out_bin.with_suffix(".meta")); Xin = X
+        shutil.copy2(apf.with_suffix(".meta"), out_bin.with_suffix(".meta")); Xin = X; Xraw = X
     det_rep = None
     if a.find == "detect":
         log(f"finding transients by shape (seed: {len(trig)} lick markers)")
-        ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks)
+        ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks, marker_pass=a.marker_pass)
         log("detection: " + ", ".join(f"{k} {v}" for k, v in det_rep.items() if k not in ("noise_uV_bits", "template_blocks")))
         if len(ev) < 20:   # e.g. a sated day with a few dozen licks: nothing to clean -- finish an UNCLEANED copy so the
             # session is still sorted with the EF fixes, and say so in the report (2026-10-27)
@@ -374,6 +438,12 @@ def main():
                 reason="fewer than 20 transients found: copy left uncleaned", date=time.strftime("%Y-%m-%d %H:%M")), indent=1, default=float))
             np.savez_compressed(rep / "lick_clean_fit.npz", detected=ev, detect_z=det_x.get("z", np.array([])),
                                 detect_r=det_x.get("r", np.array([])), markers=trig, cleaned=False)
+            if not a.no_scan:
+                try:
+                    import lick_clean_scan
+                    lick_clean_scan.scan(Xin, None, dict(detected=ev, markers=trig, cleaned=False), fs, nch, blocks, uv, rep, ses, log=log)
+                except Exception as e:
+                    log("scan skipped:", e)
             dst.rename(final); log(f"only {len(ev)} transients found: copy left UNCLEANED (still sorted with the fixes); done:", final)
             return
         marker_trig, trig = trig, ev
@@ -388,6 +458,14 @@ def main():
     Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
     hp = int(round(a.patch_ms * fs / 1000)) if a.patch_ms else 0
     log("subtracting" + (f", then a straight line over +-{hp} samples at each transient's peak" if hp else ""))
+    sc = a.second_contact_ms
+    if sc:   # block median subtraction around each transient (2026-10-29: second contacts follow 15-48% of transients)
+        import lick_clean_scan
+        good = lick_clean_scan.working_channels(Xin, nch, fs); blk = [np.flatnonzero((blocks == b) & good) for b in np.unique(blocks)]
+        sc0, sc1 = int(round(sc[0] * fs / 1000)), int(round(sc[1] * fs / 1000)); nt = 6; mg2 = int(0.01 * fs)
+        sos_sc = butter(5, 300, "highpass", fs=fs, output="sos"); lo_sc, hi_sc = est["pre"] - sc0 - nt, est["pre"] + sc1 + nt + 1
+        wsc = np.ones(hi_sc - lo_sc, np.float32); rr = 0.5 - 0.5 * np.cos(np.pi * np.arange(1, nt + 1) / (nt + 1)); wsc[:nt] = rr; wsc[-nt:] = rr[::-1]
+        log(f"  then each block's median (high-passed, {int(good.sum())} working channels) subtracted from -{sc[0]} to +{sc[1]} ms")
     for i, s in enumerate(est["starts"]):
         if a.model == "lowrank":
             rem = np.zeros((W, nch), np.float32)
@@ -399,13 +477,19 @@ def main():
         if hp:   # straight line over the transient's peak (what the model cannot follow when the transient is 2-3 samples wide)
             c = est["pre"]; a0, a1 = c - hp - 1, c + hp + 1; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
             seg[a0:a1 + 1] = seg[a0] * (1 - wl) + seg[a1] * wl
+        if sc:
+            e0, e1 = max(0, s - mg2), min(Y.shape[0], s + W + mg2)
+            ext = np.concatenate([np.asarray(Y[e0:s, :nch], np.float32), seg, np.asarray(Y[s + W:e1, :nch], np.float32)])
+            hx = sosfiltfilt(sos_sc, ext, axis=0)[s - e0:s - e0 + W]
+            for ci in blk:
+                seg[lo_sc:hi_sc, ci] -= (wsc * np.median(hx[lo_sc:hi_sc][:, ci], 1))[:, None]
         Y[s:s + W, :nch] = np.clip(np.round(seg), -32768, 32767).astype(np.int16)
     Y.flush(); del Y
     Z = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
-                patch_ms=a.patch_ms, patch_samples=hp,
+                patch_ms=a.patch_ms, patch_samples=hp, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
                 blocks={int(b): dict(n_ch=int((blocks == b).sum()), amp_median=float(np.median(est["amp"][:, k])),
@@ -419,7 +503,8 @@ def main():
     (rep / "lick_clean_params.json").write_text(json.dumps(summ, indent=1))
     np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=est["starts"], amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
                         model=a.model, find=a.find, **({f"basis_{b}": B for b, B in basis.items()} | {f"coef_{b}": c for b, c in coef.items()} if a.model == "lowrank" else {}),
-                        **(dict(detected=trig, detect_z=det_x["z"], detect_r=det_x["r"], detect_template=det_x["template"], markers=marker_trig)
+                        **(dict(detected=trig, detect_z=det_x["z"], detect_r=det_x["r"], detect_template=det_x["template"], markers=marker_trig,
+                                marker_pass=det_x.get("marker_pass", np.array([], np.int64)))
                            if a.find == "detect" else {}))
     for b, v in summ["blocks"].items():
         log(f"block {b} ({v['n_ch']} ch): fitted size median {v['amp_median']:.2f} (p10 {v['amp_p10']:.2f}, p90 {v['amp_p90']:.2f}); "
@@ -445,9 +530,15 @@ def main():
     except Exception as e:
         log("report figure skipped:", e)
     try:
-        trace_report(Xin, Z, np.asarray(est["starts"]) + est["pre"], fs, nch, blocks, T, uv, rep, ses)
+        trace_report(Xraw, Z, np.asarray(est["starts"]) + est["pre"], fs, nch, blocks, T, uv, rep, ses)
     except Exception as e:
         log("trace figure skipped:", e)
+    if not a.no_scan:
+        try:
+            import lick_clean_scan
+            F = dict(np.load(rep / "lick_clean_fit.npz", allow_pickle=True)); lick_clean_scan.scan(Xraw, Z, F, fs, nch, blocks, uv, rep, ses, log=log)
+        except Exception as e:
+            log("scan skipped:", e)
     dst.rename(final); log("done:", final)
 
 
