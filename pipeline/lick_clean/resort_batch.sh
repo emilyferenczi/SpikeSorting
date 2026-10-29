@@ -1,5 +1,6 @@
 #!/bin/bash
-# Re-sort v2, one batch (2026-10-26; cleaning on the CPU 'test' partition since 2026-10-27): clean each session's raw data (lick_clean.slrm: --find detect --patch-ms 0.13, i.e.
+# Re-sort v2, one batch (2026-10-26; cleaning on kempner_interactive since 2026-10-29, Kempner's advice for short CPU-only jobs;
+# CLEAN_PARTITION=test switches back to the FASRC test partition): clean each session's raw data (lick_clean.slrm: --find detect --patch-ms 0.13, i.e.
 # lick-contact transients found by shape, 3 components per electrode block subtracted, +-0.13 ms patch at each peak), sort
 # the cleaned copies with the launcher (EF fixes via the profile), then tar each output with its cleaning report for transfer.
 # Safe to re-run (e.g. after a login-node restart): existing cleaned copies are not redone, sessions already sorted are
@@ -19,17 +20,17 @@ LICKS=$BASE/lick_inputs; TODO=$BASE/aind_input/todo; DONE=$BASE/aind_input; OUT=
 mkdir -p "$TODO" "$TR"
 echo "[$(date)] batch of $# session(s), profile $PROFILE, base $BASE"
 
-# 1. cleaning jobs (CPU only, 'test' partition: at most MAX_CLEAN of this user's test jobs at a time)
-MAX_CLEAN=${MAX_CLEAN:-5}
+# 1. cleaning jobs (CPU only, no GPU, on CLEAN_PARTITION: at most MAX_CLEAN of this user's jobs there at a time)
+CLEAN_PARTITION=${CLEAN_PARTITION:-kempner_interactive}; MAX_CLEAN=${MAX_CLEAN:-5}
 for s in "$@"; do
   if [ -d "$TODO/$s" ] || [ -d "$DONE/$s" ]; then echo "  $s: cleaned copy exists"; continue; fi
   [ -d "$SRC/$s" ] || { echo "  $s: raw folder missing in $SRC -- SKIPPED"; continue; }
   [ -f "$LICKS/${s}_lick_onsets_imec.txt" ] || { echo "  $s: $LICKS/${s}_lick_onsets_imec.txt missing -- SKIPPED"; continue; }
-  while [ "$(squeue -u "$USER" -h -p test | wc -l)" -ge "$MAX_CLEAN" ]; do sleep 120; done
+  while [ "$(squeue -u "$USER" -h -p "$CLEAN_PARTITION" | wc -l)" -ge "$MAX_CLEAN" ]; do sleep 120; done
   # memory from the session's lick count (~2.6 MB per transient for the snippets + ~4 GB): 6 GB for a sated day, ~23 GB
   # for the busiest session, so the request stays close to what the job uses
   nl=$(wc -l < "$LICKS/${s}_lick_onsets_imec.txt"); mem=$(( 4 + (nl * 3 + 999) / 1000 )); [ $mem -lt 6 ] && mem=6; [ $mem -gt 24 ] && mem=24
-  sbatch --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" --find detect --patch-ms 0.13
+  sbatch --partition="$CLEAN_PARTITION" --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" --find detect --patch-ms 0.13
 done
 
 # 2. wait for every cleaning job of this user; refuse to sort if a copy is incomplete

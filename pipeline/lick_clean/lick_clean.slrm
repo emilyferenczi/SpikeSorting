@@ -11,7 +11,7 @@
 # most 5 at a time. Measured: 35-50 min per ~50-min session, peak memory ~14 GB on the busiest sessions.
 # A job that is stopped (time limit, node failure) leaves <session>.partial; resubmitting removes it and starts again.
 #SBATCH --job-name=lick_clean
-#SBATCH --partition=test
+#SBATCH --partition=kempner_interactive
 #SBATCH --account=kempner_bsabatini_lab
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
