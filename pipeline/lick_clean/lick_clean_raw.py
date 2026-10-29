@@ -565,7 +565,7 @@ def main():
     np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=starts_all, starts_pass1=est["starts"], starts_residual=starts2, amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
                         model=a.model, find=a.find, **({f"basis_{b}": B for b, B in basis.items()} | {f"coef_{b}": c for b, c in coef.items()} if a.model == "lowrank" else {}),
                         **(dict(detected=trig, detect_z=det_x["z"], detect_r=det_x["r"], detect_template=det_x["template"], markers=marker_trig,
-                                marker_pass=det_x.get("marker_pass", np.array([], np.int64)))
+                                marker_pass=det_x.get("marker_pass", np.array([], np.int64)), detect_low_only=det_x.get("low_only", np.array([], bool)))
                            if a.find == "detect" else {}))
     for b, v in summ["blocks"].items():
         log(f"block {b} ({v['n_ch']} ch): fitted size median {v['amp_median']:.2f} (p10 {v['amp_p10']:.2f}, p90 {v['amp_p90']:.2f}); "

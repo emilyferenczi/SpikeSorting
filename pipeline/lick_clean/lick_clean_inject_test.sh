@@ -18,9 +18,15 @@ declare -A CFG=(
   [low7]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 7 0.8 3"
   [low5]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.85 4"
   [low7res]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 7 0.8 3 --residual-pass"
+  [final]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3"
 )
+[ -n "${ONLY:-}" ] && { for c in "${!CFG[@]}"; do [[ " $ONLY " == *" $c "* ]] || unset "CFG[$c]"; done; }   # ONLY="final" runs only those
+if [ -f "$WK/inject.npz" ] && [ -d "$WK/A/$S" ] && [ -d "$WK/B/$S" ]; then
+  j1=$(sbatch --parsable --partition=kempner_interactive --account=kempner_bsabatini_lab --time=00:01:00 --mem=1G -o /dev/null --wrap="true")   # copies exist
+else
 j1=$($SB --job-name=inj_prep --time=01:00:00 --mem=16G -o "$WK/prepare_%j.out" \
      --wrap="$PY $D/lick_clean_inject_test.py prepare $RAW $WK --fit $FIT --licks $LICKS --window $T0 $T1")
+fi
 echo "prepare: job $j1"
 deps=""; runs=""
 for c in "${!CFG[@]}"; do
@@ -32,5 +38,5 @@ for c in "${!CFG[@]}"; do
   runs="$runs $c=$WK/out_$c/A,$WK/out_$c/B"
 done
 j3=$($SB --job-name=inj_eval --time=01:00:00 --mem=16G --dependency=afterok$deps -o "$WK/evaluate_%j.out" \
-     --wrap="$PY $D/lick_clean_inject_test.py evaluate $WK $runs && rm -rf $WK/out_*/A/$S/${S}_imec0/*.ap.bin $WK/out_*/B/$S/${S}_imec0/*.ap.bin")
+     --wrap="$PY $D/lick_clean_inject_test.py evaluate $WK $runs")
 echo "cleaning jobs:${deps//:/ }; evaluate: job $j3 (results: $WK/inject_results.json)"

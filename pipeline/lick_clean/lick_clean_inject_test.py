@@ -150,8 +150,63 @@ def evaluate(work, runs):
                          patched_ms=float(len(cA) * 0.27))
         arrays[f"{name}_found"] = found; arrays[f"{name}_kept"] = kept; arrays[f"{name}_far_det"] = far_det
         print(name, json.dumps(res[name], indent=1))
-    (work / "inject_results.json").write_text(json.dumps(dict(session=ses, window=I["window"].tolist(), scales=SCALES, runs=res), indent=1))
-    np.savez_compressed(work / "inject_results.npz", **arrays)
+    jf, nf = work / "inject_results.json", work / "inject_results.npz"      # merged with earlier runs (later runs replace same names)
+    prev = json.loads(jf.read_text())["runs"] if jf.exists() else {}; prev.update(res)
+    jf.write_text(json.dumps(dict(session=ses, window=I["window"].tolist(), scales=SCALES, runs=prev), indent=1))
+    old = dict(np.load(nf, allow_pickle=True)) if nf.exists() else {}; old.update(arrays); np.savez_compressed(nf, **old)
+
+
+def stats(work, fitdir):
+    """the detector's statistics (as detect(): block common modes whitened by the detection noise, matched filter with the
+    detection template) over the whole injected window A: at each injected transient (the strongest score within +-0.5 ms) and at
+    2000 random lick-free sites away from injections -- score z, shape r, blocks with the shape, energy -> inject_stats.npz"""
+    work = Path(work); I = dict(np.load(work / "inject.npz", allow_pickle=True)); ses = str(I["session"]); fs = float(I["fs"])
+    fa = next((work / "A" / ses / f"{ses}_imec0").glob("*.ap.bin")); M = LC.read_meta(fa.with_suffix(".meta")); nsv = int(M["nSavedChans"]); nch = nsv - 1
+    sh, y = LC.geometry(M); blocks = sh * 2 + (y > LC.SPLIT_UM); ub = np.unique(blocks); A = np.memmap(fa, dtype=np.int16, mode="r").reshape(-1, nsv)
+    F = np.load(Path(fitdir) / ses / "lick_clean" / "lick_clean_fit.npz", allow_pickle=True)
+    P = json.loads((Path(fitdir) / ses / "lick_clean" / "lick_clean_params.json").read_text()); sig = np.asarray(P["detection"]["noise_uV_bits"])
+    U = np.asarray(F["detect_template"], np.float64) / sig; u = U / np.linalg.norm(U); un = np.linalg.norm(u, axis=0) + 1e-9
+    sos = butter(5, 300, "highpass", fs=fs, output="sos"); mg = int(LC.MARGIN_MS * fs / 1000); h = int(LC.DET_HALF_MS * fs / 1000); n = A.shape[0]
+    Zs, Rs, NB, E = (np.zeros(n, np.float32) for _ in range(4)); C = int(4 * fs)
+    for a in range(mg + h, n - mg - h, C):
+        b = min(a + C, n - mg - h); c = LC.common_mode(A, a - h, b + h, nch, blocks, ub, sos, mg) / sig
+        mb = np.stack([np.correlate(c[:, j], u[:, j], "valid") for j in range(len(ub))], 1); m = mb.sum(1)
+        e = np.sqrt(np.convolve((c ** 2).sum(1), np.ones(2 * h + 1), "valid")) + 1e-6
+        eb = np.sqrt(np.stack([np.convolve(c[:, j] ** 2, np.ones(2 * h + 1), "valid") for j in range(len(ub))], 1)) + 1e-6
+        Zs[a:b] = m / (np.median(np.abs(m)) / 0.6745 + 1e-6); Rs[a:b] = m / e; NB[a:b] = ((mb / (eb * un)) >= LC.LOW_BLOCK_R).sum(1)
+        E[a:b] = np.sqrt((c[h:h + (b - a)] ** 2).sum(1))
+    rng = np.random.default_rng(3); it = I["inj_t"]
+    null = far_times(n, np.concatenate([I["markers"], I["real_transients"], it]), 2000, int(0.1 * fs), rng, int(0.05 * fs), int(0.002 * fs))
+    def at(sites):
+        out = []
+        for t in sites:
+            w = slice(max(0, t - 15), min(n, t + 16)); k = w.start + int(np.argmax(Zs[w])); out.append((Zs[k], Rs[k], NB[k], E[w].max()))
+        return np.array(out, np.float32)
+    # candidate rules over the WHOLE window: events (strongest per 15 ms) in lick-free time (> 100 ms from every marker, real
+    # transient and injection) = false detections per minute; at markers without a cleaned transient (their lag window) = recovered
+    ref = int(LC.DET_REFRACT_MS * fs / 1000); busy = np.sort(np.concatenate([I["markers"], I["real_transients"], it]))
+    cA = np.sort(np.asarray(F["starts"], np.int64) + int(LC.PRE_MS * fs / 1000)); mk = np.sort(I["markers"])
+    j = np.searchsorted(cA, mk - int(0.08 * fs)); has = (j < len(cA)) & (cA[np.minimum(j, len(cA) - 1)] <= mk + int(0.02 * fs))
+    lag = (cA[np.minimum(j, len(cA) - 1)] - mk)[has]; w0, w1 = int(np.percentile(lag, 5)) - int(0.002 * fs), int(np.percentile(lag, 95)) + int(0.002 * fs)
+    miss = mk[~has]; free = np.ones(n, bool)
+    for t in busy:
+        free[max(0, t - int(0.1 * fs)):t + int(0.1 * fs)] = False
+    free_min = free.sum() / fs / 60; rules = [(15, .6, 0), (10, .8, 0), (7, .8, 3), (5, .6, 3), (4, .6, 3), (4, .5, 3), (3.5, .55, 3), (3, .5, 3), (5, .5, 4), (3, .6, 4)]
+    rr = []
+    for zt, rt, nb in rules:
+        ok = (Zs >= zt) & (Rs >= rt) & (NB >= nb); idx = np.flatnonzero(ok); evs = []
+        for q in idx[np.argsort(-Zs[idx])]:
+            if not evs or np.min(np.abs(np.array(evs) - q)) > ref:
+                evs.append(q)
+            if len(evs) > 20000:
+                break
+        evs = np.sort(np.array(evs, np.int64)); fp = int(free[evs].sum()) if len(evs) else 0
+        k = np.searchsorted(evs, miss + w0); rec = int(((k < len(evs)) & (evs[np.minimum(k, len(evs) - 1)] <= miss + w1)).sum()) if len(evs) else 0
+        rr.append((zt, rt, nb, len(evs), fp, fp / free_min, rec, len(miss)))
+        print(f"rule z>={zt} r>={rt} nb>={nb}: {len(evs)} events; in lick-free time {fp} ({fp / free_min:.2f}/min of {free_min:.1f} min); "
+              f"at the {len(miss)} markers without a cleaned transient: {rec}", flush=True)
+    np.savez_compressed(work / "inject_stats.npz", inj=at(it), inj_scale=I["inj_scale"], null=at(null), sig=sig, rules=np.array(rr, float))
+    print("stats written:", work / "inject_stats.npz")
 
 
 if __name__ == "__main__":
@@ -159,5 +214,7 @@ if __name__ == "__main__":
     if cmd == "prepare":
         g = lambda k, n=1: args[args.index(k) + 1:args.index(k) + 1 + n]
         prepare(args[0], args[1], g("--fit")[0], g("--licks")[0], [float(v) for v in g("--window", 2)])
+    elif cmd == "stats":
+        stats(args[0], args[1])
     elif cmd == "evaluate":
         evaluate(args[0], args[1:])
