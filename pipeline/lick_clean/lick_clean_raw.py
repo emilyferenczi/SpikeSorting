@@ -128,6 +128,8 @@ DET_RULES = ((15.0, 0.6), (10.0, 0.8))   # a transient: matched-filter score >= 
                                           # marker; weaker ones mostly at random lags = noise)
 DET_SEED_Z = 8.0                          # seed: whitened common-mode energy >= 8^2 at the strongest point near the marker
 LOW_BLOCK_R = 0.5                         # low rule: a block 'has the shape' when its own correlation with its template is >= 0.5
+LOW_FREE_MS, LOW_NEAR_MS, LOW_MAX_FREE_PER_MIN = 200.0, 150.0, 0.5   # low rule calibration: lick-free = > 200 ms from licks; applied only
+                                          # <= 150 ms from a lick marker or main detection; score raised until <= 0.5 lick-free hits / min
 MP_SHAPE_R, MP_NULL_PCT = 0.6, 99.0       # marker pass (2026-10-29): shape r >= 0.6 and energy > 99th pct of random lick-free
                                           # windows (0611 / 0610 / 0825: 0% of random windows, 91-93% of detected licks pass;
                                           # 21 / 15 / 5% of undetected licks hide a ~90-130 uV transient)
@@ -191,7 +193,7 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
             U = np.median(np.stack(S2), 0)
     u = U / np.linalg.norm(U)                              # whitened, unit-norm template (2h + 1) x n_blocks
     # 2. matched filter over the recording
-    C = int(chunk_s * fs); ev, evm, evr, evl, lg = [], [], [], [], []; un = np.linalg.norm(u, axis=0) + 1e-9
+    C = int(chunk_s * fs); ev, evm, evr, evl, lg = [], [], [], [], []; lct, lcz, lcr = [], [], []; un = np.linalg.norm(u, axis=0) + 1e-9
     for a in range(mg + h, n - mg - h, C):
         b = min(a + C, n - mg - h); c = common_mode(X, a - h, b + h, nch, blocks, ub, sos, mg) / sig
         mb = np.stack([np.correlate(c[:, j], u[:, j], "valid") for j in range(len(ub))], 1); m = mb.sum(1)     # len b - a
@@ -202,13 +204,19 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
             eb = np.sqrt(np.stack([np.convolve(c[:, j] ** 2, np.ones(2 * h + 1), "valid") for j in range(len(ub))], 1)) + 1e-6
             nbk = ((mb / (eb * un)) >= LOW_BLOCK_R).sum(1)
             low_ok = (z >= low_rule[0]) & (r >= low_rule[1]) & (nbk >= low_rule[2])
-        pk = np.flatnonzero(main_ok | low_ok)
-        if len(pk):
+        for ok_, store in ((main_ok, "main"), (low_ok & ~main_ok, "low")):     # main rules; lower-threshold candidates kept apart
+            pk = np.flatnonzero(ok_)
+            if not len(pk):
+                continue
             o = pk[np.argsort(-z[pk])]; keep = []
             for q in o:
                 if all(abs(q - k) > int(DET_REFRACT_MS * fs / 1000) for k in keep):
                     keep.append(q)
-            keep = np.sort(keep); ev.append(a + keep); evm.append(z[keep]); evr.append(r[keep]); evl.append(~main_ok[keep])
+            keep = np.sort(keep)
+            if store == "main":
+                ev.append(a + keep); evm.append(z[keep]); evr.append(r[keep]); evl.append(np.zeros(len(keep), bool))
+            else:
+                lct.append(a + keep); lcz.append(z[keep]); lcr.append(r[keep])
         if large_rule:   # shape-free: big on most blocks at once (instantaneous whitened common mode)
             ci = c[h:h + (b - a)]; E_ = np.sqrt((ci ** 2).sum(1)); nbz = (np.abs(ci) >= large_rule[1]).sum(1)
             q = np.flatnonzero((E_ >= large_rule[0]) & (nbz >= large_rule[2]))
@@ -219,6 +227,29 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
             lg.append(a + np.sort(np.array(kl, np.int64)))
     ev = np.concatenate(ev) if ev else np.array([], np.int64); evm = np.concatenate(evm) if evm else np.array([])
     evr = np.concatenate(evr) if evr else np.array([]); evl = np.concatenate(evl) if evl else np.array([], bool)
+    low_rep = None
+    if low_rule and lct:   # 2026-10-29: the lower threshold is calibrated per session (EF407 1015: 25 noise detections / min far from
+        # licks at score 5, vs 0.3-2 in EF384): the lowest score >= Z at which candidates > LOW_FREE_MS from every marker and main
+        # detection stay <= LOW_MAX_FREE_PER_MIN, and kept only <= LOW_NEAR_MS from a marker or a main detection (licking)
+        import lick_clean_scan
+        lt = np.concatenate(lct); lz = np.concatenate(lcz); lr = np.concatenate(lcr); o = np.argsort(lt); lt, lz, lr = lt[o], lz[o], lr[o]
+        refs = np.sort(np.concatenate([trig, ev]))
+        def dist(x, ref):
+            if not len(ref):
+                return np.full(len(x), 10 ** 12)
+            j = np.searchsorted(ref, x); return np.minimum(np.abs(x - ref[np.clip(j - 1, 0, len(ref) - 1)]), np.abs(ref[np.clip(j, 0, len(ref) - 1)] - x))
+        dl = dist(lt, refs); free = dl > int(LOW_FREE_MS * fs / 1000)
+        free_min = max(lick_clean_scan.lick_free_minutes(refs, n, fs) if len(refs) else n / fs / 60, 1e-6)   # +-100 ms around licks excluded
+        thr = None
+        for zt in np.arange(low_rule[0], 40.01, 0.5):
+            if ((lz >= zt) & free).sum() / free_min <= LOW_MAX_FREE_PER_MIN:
+                thr = float(zt); break
+        keep = (lz >= (thr if thr is not None else np.inf)) & (dl <= int(LOW_NEAR_MS * fs / 1000)) & (dist(lt, ev) > int(DET_REFRACT_MS * fs / 1000))
+        low_rep = dict(candidates=int(len(lt)), score_threshold=thr, free_per_min_at_threshold=float(((lz >= (thr or np.inf)) & free).sum() / free_min),
+                       free_per_min_at_min_score=float(free.sum() / free_min), added=int(keep.sum()))
+        if keep.any():
+            ev = np.concatenate([ev, lt[keep]]); evm = np.concatenate([evm, lz[keep]]); evr = np.concatenate([evr, lr[keep]]); evl = np.concatenate([evl, np.ones(keep.sum(), bool)])
+            o = np.argsort(ev, kind="stable"); ev, evm, evr, evl = ev[o], evm[o], evr[o], evl[o]
     large = np.concatenate(lg).astype(np.int64) if lg else np.array([], np.int64)
     if len(large) and len(ev):   # keep only large events > 3 ms from every template detection (those are cleaned with the model)
         j = np.searchsorted(ev, large); d = np.minimum(np.abs(large - ev[np.clip(j - 1, 0, len(ev) - 1)]), np.abs(ev[np.clip(j, 0, len(ev) - 1)] - large))
@@ -226,7 +257,7 @@ def detect(X, trig, fs, nch, blocks, chunk_s=4.0, marker_pass=False, low_rule=No
     # report: markers with a transient within DET_SEED_MS, their lags, transients away from every marker
     rep = dict(n_seed=len(segs), n_detected=int(len(ev)), n_markers=int(len(trig)), noise_uV_bits=sig.tolist(),
                template_blocks=[int(b) for b in ub], low_rule=list(low_rule) if low_rule else None, n_low_rule_only=int(evl.sum()),
-               template_given=template is not None, large_rule=list(large_rule) if large_rule else None, n_large=int(len(large)))
+               template_given=template is not None, large_rule=list(large_rule) if large_rule else None, n_large=int(len(large)), low_rule_calibration=low_rep)
     if len(trig) and len(ev):
         j = np.searchsorted(ev, trig + p0); has = (j < len(ev)) & (ev[np.minimum(j, len(ev) - 1)] <= trig + p1)
         lag = (ev[np.minimum(j, len(ev) - 1)] - trig)[has] / fs * 1000

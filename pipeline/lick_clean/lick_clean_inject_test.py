@@ -46,7 +46,7 @@ def far_times(n, avoid, k, gap, rng, margin, min_sep):
     return np.sort(np.array(out, np.int64))
 
 
-def prepare(src, work, fit, licks, win, seed=1, large_txt=None):
+def prepare(src, work, fit, licks, win, seed=1, large_txt=None, near_licks=False):
     rng = np.random.default_rng(seed); src = Path(src); ses = src.name; work = Path(work); work.mkdir(parents=True, exist_ok=True)
     apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = LC.read_meta(apf.with_suffix(".meta")); M_text = apf.with_suffix(".meta").read_text()
     fs = float(M.get("imSampRate", LC.FS_DEFAULT)); nsv = int(M["nSavedChans"]); nch = nsv - 1
@@ -60,7 +60,20 @@ def prepare(src, work, fit, licks, win, seed=1, large_txt=None):
     mk = np.loadtxt(licks, dtype=np.int64).ravel(); mk = mk[(mk > s0) & (mk < s1)] - s0
     good = LS.working_channels(X[s0:s1], nch, fs)
     # transients at lick-free times
-    k = N_PER_SCALE * len(SCALES); it = far_times(n, np.concatenate([mk, cen_real]), k, int(0.2 * fs), rng, int(0.05 * fs), int(0.2 * fs))
+    k = N_PER_SCALE * len(SCALES)
+    if near_licks:   # 2026-10-29: between licks (40-120 ms after a lick marker, >= 30 ms from every real transient and marker), where the
+        # lower threshold applies -- it is restricted to <= 150 ms from licks, so lick-free injections cannot test it
+        cand = mk + (rng.uniform(0.040, 0.120, len(mk)) * fs).astype(np.int64); busy = np.sort(np.concatenate([mk, cen_real]))
+        j = np.searchsorted(busy, cand); d = np.minimum(np.abs(cand - busy[np.clip(j - 1, 0, len(busy) - 1)]), np.abs(busy[np.clip(j, 0, len(busy) - 1)] - cand))
+        cand = cand[(d >= int(0.03 * fs)) & (cand > int(0.05 * fs)) & (cand < n - int(0.05 * fs))]; rng.shuffle(cand); it = []
+        for t in cand:
+            if all(abs(t - o) > int(0.2 * fs) for o in it):
+                it.append(int(t))
+            if len(it) >= k:
+                break
+        it = np.sort(np.array(it, np.int64))
+    else:
+        it = far_times(n, np.concatenate([mk, cen_real]), k, int(0.2 * fs), rng, int(0.05 * fs), int(0.2 * fs))
     if len(it) < k:
         print(f"only {len(it)} lick-free sites for {k} injections (window too busy) -- using them"); k = len(it)
     if large_txt:   # 2026-10-29: real big, differently shaped contact transients of this session (scan: energy >= 100, shape r < 0.6),
@@ -223,7 +236,8 @@ if __name__ == "__main__":
     cmd = sys.argv[1]; args = sys.argv[2:]
     if cmd == "prepare":
         g = lambda k, n=1: args[args.index(k) + 1:args.index(k) + 1 + n]
-        prepare(args[0], args[1], g("--fit")[0], g("--licks")[0], [float(v) for v in g("--window", 2)], large_txt=g("--large")[0] if "--large" in args else None)
+        prepare(args[0], args[1], g("--fit")[0], g("--licks")[0], [float(v) for v in g("--window", 2)], large_txt=g("--large")[0] if "--large" in args else None,
+                near_licks="--near-licks" in args)
     elif cmd == "stats":
         stats(args[0], args[1])
     elif cmd == "evaluate":
