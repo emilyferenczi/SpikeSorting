@@ -250,24 +250,34 @@ def plot_traces(D, out_png):
     """draw lick_clean_traces data (also used on the analysis computer, where matplotlib exists)"""
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
     fs = float(D["fs"]); chans, ub = np.asarray(D["chans"]), np.asarray(D["chan_blocks"]); raw, cln = np.asarray(D["bout_raw"]), np.asarray(D["bout_clean"])
-    t = np.arange(raw.shape[0]) / fs; off = 1.2 * np.percentile(np.abs(raw), 99.9) if raw.size else 1.0
-    fig = plt.figure(figsize=(16, 4 + 2.0 * len(chans))); gs = fig.add_gridspec(2, 3, height_ratios=[1.4, 1.0]); a = fig.add_subplot(gs[0, :])
-    for k, ch in enumerate(chans):
-        a.plot(t, raw[:, k] - k * off, color="0.65", lw=0.5); a.plot(t, cln[:, k] - k * off, color="k", lw=0.5)
-        a.text(t[-1], -k * off, f" ch {ch} (block {ub[k]})", fontsize=7, va="center")
-    for x in np.asarray(D["bout_transients"]):
-        a.axvline(x / fs, color="#d62728", lw=0.4, alpha=0.5)
-    a.set_title(f"{D['session']}: 2 s of a lick bout ({len(D['bout_transients'])} transients, red lines), high-passed 300 Hz -- raw grey, cleaned black",
-                fontsize=9); a.set_xlabel("s"); a.set_yticks([]); a.set_xlim(0, t[-1] * 1.1)
+    # zoomed out (2026-10-29, Emily: overlaid, the raw transients hid everything): raw and cleaned side by side on one scale --
+    # channel spacing from the CLEANED traces, raw clipped at half a spacing either way (clipped samples marked)
+    t = np.arange(raw.shape[0]) / fs; off = 2.5 * np.percentile(np.abs(cln), 99.9) if cln.size else 1.0; lim = 0.5 * off
+    fig = plt.figure(figsize=(16, 4.5 + 2.0 * len(chans))); gs = fig.add_gridspec(2, 6, height_ratios=[1.5, 1.0])
+    for col, (nm, X_) in enumerate((("raw", raw), ("cleaned", cln))):
+        a = fig.add_subplot(gs[0, 3 * col:3 * col + 3])
+        for k, ch in enumerate(chans):
+            y = np.clip(X_[:, k], -lim, lim); a.plot(t, y - k * off, color="0.35" if nm == "raw" else "k", lw=0.5)
+            hit = np.abs(X_[:, k]) > lim
+            if hit.any():
+                a.plot(t[hit], np.sign(X_[hit, k]) * lim - k * off, "|", color="#d62728", ms=4)
+            if col == 1:
+                a.text(t[-1], -k * off, f" ch {ch} (block {ub[k]})", fontsize=7, va="center")
+        for x in np.asarray(D["bout_transients"]):
+            a.axvline(x / fs, color="#d62728", lw=0.4, alpha=0.35)
+        a.set_title(f"{nm} (both panels clipped at +-{lim:.0f} uV, red ticks)", fontsize=9)
+        a.set_xlabel("s"); a.set_yticks([]); a.set_xlim(0, t[-1] * (1.12 if col == 1 else 1.0)); a.set_ylim(-(len(chans) - 0.5) * off, 0.6 * off)
+    fig.suptitle(f"{D['session']}: 2 s of a lick bout ({len(D['bout_transients'])} transients, faint red lines), high-passed 300 Hz, "
+                 f"one channel per electrode block, channel spacing {off:.0f} uV", fontsize=10)
     h = int(D["ex_half"])
     for i, nm in enumerate(("typical transient", "largest transient", "last of the bout")):
-        a = fig.add_subplot(gs[1, i]); r, z = np.asarray(D[f"ex{i}_raw"]), np.asarray(D[f"ex{i}_clean"]); tt = (np.arange(2 * h) - h) / fs * 1000
+        a = fig.add_subplot(gs[1, 2 * i:2 * i + 2]); r, z = np.asarray(D[f"ex{i}_raw"]), np.asarray(D[f"ex{i}_clean"]); tt = (np.arange(2 * h) - h) / fs * 1000
         o2 = 1.3 * max(np.abs(r).max(), 1.0)
         for k in range(len(chans)):
             a.plot(tt, r[:, k] - k * o2, color="0.65", lw=0.8); a.plot(tt, z[:, k] - k * o2, color="k", lw=0.8)
             a.plot(tt, (r - z)[:, k] - k * o2, color="#d62728", lw=0.6, alpha=0.8)
         a.set_title(f"{nm} (+-6 ms): raw grey, cleaned black, removed red", fontsize=8); a.set_xlabel("ms"); a.set_yticks([])
-    fig.text(0.01, 0.005, f"zoomed-out channel spacing {off:.0f} uV; bottom panels: spacing 1.3 x the largest raw deflection", fontsize=7)
+    fig.text(0.01, 0.005, "bottom panels: spacing 1.3 x the largest raw deflection; the patch replaces +-4 samples around each peak by a straight line", fontsize=7)
     fig.tight_layout(); fig.savefig(out_png, dpi=110); plt.close(fig)
 
 
