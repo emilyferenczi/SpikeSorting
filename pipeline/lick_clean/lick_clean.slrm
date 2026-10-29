@@ -5,10 +5,10 @@
 # e.g. sbatch pipeline/lick_clean/lick_clean.slrm \
 #        /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest/aind_input/20260805_EF405_g0 \
 #        /n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting_eftest2/aind_input/todo
-# CPU only (single-threaded python), so it runs on the FASRC 'test' partition with the Kempner account: no GPU (2026-10-27,
-# after Job Defense Shield flagged GPUs held at 0% by the earlier kempner_requeue version; Kempner has no CPU partition and
-# HMS groups cannot use shared / serial_requeue). 'test' allows 12 h and at most 5 jobs per user: resort_batch.sh submits at
-# most 5 at a time. Measured: 35-50 min per ~50-min session, peak memory ~14 GB on the busiest sessions.
+# CPU only (single-threaded python), no GPU: on kempner_interactive with the Kempner account since 2026-10-29 (Kempner's advice
+# for short CPU-only jobs, after Job Defense Shield flagged GPUs held at 0% by the earlier kempner_requeue version); before that
+# the FASRC 'test' partition (12 h, at most 5 jobs per user). resort_batch.sh passes --partition=$CLEAN_PARTITION and submits
+# at most MAX_CLEAN (5) at a time. Measured: 35-50 min per ~50-min session, peak memory ~14 GB on the busiest sessions.
 # A job that is stopped (time limit, node failure) leaves <session>.partial; resubmitting removes it and starts again.
 #SBATCH --job-name=lick_clean
 #SBATCH --partition=kempner_interactive
