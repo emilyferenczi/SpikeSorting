@@ -371,10 +371,11 @@ def main():
     ap.add_argument("--no-scan", action="store_true", help="skip the whole-recording scan (lick_clean_scan.py) at the end")
     ap.add_argument("--scan-only", action="store_true", help="for a session already cleaned: <session_dir> = the raw session folder, "
                     "<out_parent> = the CLEANED session folder; writes only lick_clean/lick_clean_scan.npz / .json")
+    ap.add_argument("--examples-only", action="store_true", help="with --scan-only: only the example events from an existing scan")
     a = ap.parse_args()
     if a.scan_only:
         import lick_clean_scan
-        sys.argv = [sys.argv[0], a.session_dir, a.out_parent]; lick_clean_scan.main(); return
+        sys.argv = [sys.argv[0], a.session_dir, a.out_parent] + (["--examples"] if a.examples_only else []); lick_clean_scan.main(); return
     if a.traces_only:
         src, cl = Path(a.session_dir).resolve(), Path(a.out_parent).resolve(); ses = src.name
         apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = read_meta(apf.with_suffix(".meta"))
@@ -537,6 +538,7 @@ def main():
         try:
             import lick_clean_scan
             F = dict(np.load(rep / "lick_clean_fit.npz", allow_pickle=True)); lick_clean_scan.scan(Xraw, Z, F, fs, nch, blocks, uv, rep, ses, log=log)
+            lick_clean_scan.examples(Xraw, Z, dict(np.load(rep / "lick_clean_scan.npz", allow_pickle=True)), fs, nch, blocks, uv, rep, log=log)
         except Exception as e:
             log("scan skipped:", e)
     dst.rename(final); log("done:", final)

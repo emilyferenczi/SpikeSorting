@@ -11,7 +11,9 @@ know how many transients are missed / remain'). Every sample of both files, not 
      lick-free time)
 Writes lick_clean/lick_clean_scan.npz (events of both files, 10-s timelines per class, the energy envelope per 100 ms,
 example snippets per class: block common modes and one channel per block, raw and cleaned) + lick_clean_scan.json (counts).
-Run alone: python lick_clean_scan.py <raw session dir> <cleaned session dir>   (numpy / scipy only)
++ lick_clean_scan_examples.npz: per class the 12 strongest and 12 random events, both files (examples()).
+Run alone: python lick_clean_scan.py <raw session dir> <cleaned session dir> [--examples: only the examples, from an existing scan]
+(numpy / scipy only)
 """
 import json
 import sys
@@ -167,6 +169,46 @@ def scan(X, Z, F, fs, nch, blocks, uv, rep, ses, log=print):
     return summ
 
 
+N_STRONG, N_RAND = 12, 12
+
+
+def event_snippets(A, t, nch, blocks, ub, good, fs, chans, uv, sos):
+    """+-EX_MS around each sample in t: each block's common mode (as in the scan) and one channel per block, high-passed, uV"""
+    h = int(EX_MS * fs / 1000); mg = int(0.03 * fs); cm, ch = [], []
+    for k in t:
+        x = np.asarray(A[k - h - mg:k + h + 1 + mg, :nch], np.float32); x -= x.mean(0)
+        c = np.stack([np.median(x[:, (blocks == u) & good], 1) for u in ub], 1)
+        cm.append(sosfiltfilt(sos, c, axis=0)[mg:mg + 2 * h + 1] * uv); ch.append(sosfiltfilt(sos, x[:, chans], axis=0)[mg:mg + 2 * h + 1] * uv)
+    return np.array(cm, np.float32), np.array(ch, np.float32)
+
+
+def examples(X, Z, S, fs, nch, blocks, uv, rep, log=print, seed=0):
+    """2026-10-29 (Emily: 'are the ones shown the only remaining artifacts, or just examples?'): per class the N_STRONG strongest
+    events and N_RAND random others (energy >= 12) of the cleaned file (and of the raw file for at_transient / missed_at_lick),
+    with both files' snippets, so the worst cases can be seen. Writes lick_clean/lick_clean_scan_examples.npz."""
+    ub = np.unique(blocks); good = working_channels(X, nch, fs); sos = butter(5, 300, "highpass", fs=fs, output="sos")
+    n = X.shape[0]; h = int(EX_MS * fs / 1000); mg = int(0.03 * fs); rng = np.random.default_rng(seed); chans = np.asarray(S["chans"])
+    out = dict(session=S["session"], fs=fs, classes=S["classes"], transients=S["transients"], chans=chans, blocks=ub)
+    for src in ("cleaned", "raw"):
+        if f"{src}_sample" not in S:
+            continue
+        pk, en, cls, r = (np.asarray(S[f"{src}_{k}"]) for k in ("sample", "energy", "class", "r"))
+        for ci, cl in enumerate(CLASSES):
+            if src == "raw" and cl not in ("at_transient", "missed_at_lick"):
+                continue
+            ok = np.flatnonzero((cls == ci) & (en >= THR[0]) & (pk > h + mg) & (pk < n - h - mg))
+            if not len(ok):
+                continue
+            strong = ok[np.argsort(-en[ok])[:N_STRONG]]; rest = np.setdiff1d(ok, strong)
+            rnd = np.sort(rng.choice(rest, min(N_RAND, len(rest)), replace=False)) if len(rest) else np.array([], int)
+            sel = np.concatenate([strong, rnd]).astype(int); key = f"x_{cl}_{src}"
+            out.update({f"{key}_t": pk[sel], f"{key}_energy": en[sel], f"{key}_r": r[sel], f"{key}_nstrong": len(strong), f"{key}_n": len(ok)})
+            for nm, A in (("raw", X), ("cleaned", Z)):
+                if A is not None:
+                    out[f"{key}_cm_{nm}"], out[f"{key}_ch_{nm}"] = event_snippets(A, pk[sel], nch, blocks, ub, good, fs, chans, uv, sos)
+    np.savez_compressed(Path(rep) / "lick_clean_scan_examples.npz", **out); log("examples written:", Path(rep) / "lick_clean_scan_examples.npz")
+
+
 def main():
     src, cl = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(); ses = src.name
     apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = LC.read_meta(apf.with_suffix(".meta"))
@@ -180,10 +222,16 @@ def main():
         if not w:
             sys.exit(f"{ses}: cleaned file {Z.shape} differs from raw {X.shape}")
         s0 = int(w[0] * fs); X = X[s0:s0 + Z.shape[0]]
+    if "--examples" in sys.argv:   # from an existing scan: strongest + random events per class, both files
+        S = dict(np.load(cl / "lick_clean" / "lick_clean_scan.npz", allow_pickle=True))
+        F = dict(np.load(cl / "lick_clean" / "lick_clean_fit.npz", allow_pickle=True))
+        examples(X, Z if ("starts" in F) else None, S, fs, nch, blocks, uv, cl / "lick_clean", log=LC.log); return
     F = dict(np.load(cl / "lick_clean" / "lick_clean_fit.npz", allow_pickle=True))
     if "cleaned" in F:
         F["cleaned"] = bool(F["cleaned"])
     scan(X, Z, F, fs, nch, blocks, uv, cl / "lick_clean", ses, log=LC.log)
+    examples(X, Z if F.get("cleaned", True) and "starts" in F else None, dict(np.load(cl / "lick_clean" / "lick_clean_scan.npz", allow_pickle=True)),
+             fs, nch, blocks, uv, cl / "lick_clean", log=LC.log)
 
 
 if __name__ == "__main__":
