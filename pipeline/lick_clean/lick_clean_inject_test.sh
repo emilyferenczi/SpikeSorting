@@ -7,7 +7,8 @@
 # copies (~7 GB each) are deleted after the evaluation.
 set -euo pipefail
 S=${1:?session}; T0=${2:?T0}; T1=${3:?T1}
-L=/n/netscratch/bsabatini_lab/Lab/eferenczi; RAW=$L/spikesorting/aind_input/$S; WK=$L/spikesorting_v2_pilotnew/inject/$S
+# LARGE=<file of sample indices>: inject this session's own big, differently shaped transients instead (work folder <session>_large)
+L=/n/netscratch/bsabatini_lab/Lab/eferenczi; RAW=$L/spikesorting/aind_input/$S; WK=$L/spikesorting_v2_pilotnew/inject/$S${LARGE:+_large}
 FIT=${4:-$L/spikesorting_v2/aind_input/todo/$S/lick_clean/lick_clean_fit.npz}; LICKS=$L/spikesorting_v2/lick_inputs/${S}_lick_onsets_imec.txt
 PY=/n/holylabs/LABS/bsabatini_lab/Users/eferenczi/envs/raw_extract/bin/python; D=pipeline/lick_clean
 SB="sbatch --parsable --partition=kempner_interactive --account=kempner_bsabatini_lab --cpus-per-task=1"
@@ -19,13 +20,14 @@ declare -A CFG=(
   [low5]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.85 4"
   [low7res]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 7 0.8 3 --residual-pass"
   [final]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3"
+  [finalL]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3"
 )
 [ -n "${ONLY:-}" ] && { for c in "${!CFG[@]}"; do [[ " $ONLY " == *" $c "* ]] || unset "CFG[$c]"; done; }   # ONLY="final" runs only those
 if [ -f "$WK/inject.npz" ] && [ -d "$WK/A/$S" ] && [ -d "$WK/B/$S" ]; then
   j1=$(sbatch --parsable --partition=kempner_interactive --account=kempner_bsabatini_lab --time=00:01:00 --mem=1G -o /dev/null --wrap="true")   # copies exist
 else
 j1=$($SB --job-name=inj_prep --time=01:00:00 --mem=16G -o "$WK/prepare_%j.out" \
-     --wrap="$PY $D/lick_clean_inject_test.py prepare $RAW $WK --fit $FIT --licks $LICKS --window $T0 $T1")
+     --wrap="$PY $D/lick_clean_inject_test.py prepare $RAW $WK --fit $FIT --licks $LICKS --window $T0 $T1 ${LARGE:+--large $LARGE}")
 fi
 echo "prepare: job $j1"
 deps=""; runs=""

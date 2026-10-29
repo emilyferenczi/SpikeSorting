@@ -46,7 +46,7 @@ def far_times(n, avoid, k, gap, rng, margin, min_sep):
     return np.sort(np.array(out, np.int64))
 
 
-def prepare(src, work, fit, licks, win, seed=1):
+def prepare(src, work, fit, licks, win, seed=1, large_txt=None):
     rng = np.random.default_rng(seed); src = Path(src); ses = src.name; work = Path(work); work.mkdir(parents=True, exist_ok=True)
     apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = LC.read_meta(apf.with_suffix(".meta")); M_text = apf.with_suffix(".meta").read_text()
     fs = float(M.get("imSampRate", LC.FS_DEFAULT)); nsv = int(M["nSavedChans"]); nch = nsv - 1
@@ -63,7 +63,17 @@ def prepare(src, work, fit, licks, win, seed=1):
     k = N_PER_SCALE * len(SCALES); it = far_times(n, np.concatenate([mk, cen_real]), k, int(0.2 * fs), rng, int(0.05 * fs), int(0.2 * fs))
     if len(it) < k:
         print(f"only {len(it)} lick-free sites for {k} injections (window too busy) -- using them"); k = len(it)
-    sc = np.repeat(SCALES, N_PER_SCALE)[:k]; rng.shuffle(sc); src_i = rng.integers(0, len(amp), k)
+    if large_txt:   # 2026-10-29: real big, differently shaped contact transients of this session (scan: energy >= 100, shape r < 0.6),
+        # high-passed +-10 ms snippets on every channel (cosine edges), injected at 0.25 / 0.5 / 1 x their size
+        LT = np.loadtxt(large_txt, dtype=np.int64).ravel(); LT = LT[(LT > s1 + int(0.05 * fs)) | (LT < s0 - int(0.05 * fs))]
+        sosL = butter(5, 300, "highpass", fs=fs, output="sos"); mgL = int(0.03 * fs); nt = int(0.003 * fs)
+        tapL = np.ones(W, np.float32); rL = 0.5 - 0.5 * np.cos(np.pi * np.arange(nt) / nt); tapL[:nt] = rL; tapL[-nt:] = rL[::-1]
+        pick = rng.choice(LT, min(40, len(LT)), replace=False)
+        SN = np.stack([sosfiltfilt(sosL, np.asarray(X[t - pre - mgL:t - pre + W + mgL, :nch], np.float32), axis=0)[mgL:mgL + W] * tapL[:, None] for t in pick]).astype(np.float32)
+        scales = [0.25, 0.5, 1.0]; k = min(k, N_PER_SCALE * len(scales)); it = it[:k]
+        sc = np.repeat(scales, N_PER_SCALE)[:k]; rng.shuffle(sc); src_i = rng.integers(0, len(SN), k)
+    else:
+        sc = np.repeat(SCALES, N_PER_SCALE)[:k]; rng.shuffle(sc); src_i = rng.integers(0, len(amp), k)
     # copies written to disk and changed in place (a 5-min window is ~7 GB per copy)
     def make(nm):
         d = work / nm / ses / f"{ses}_imec0"; d.mkdir(parents=True, exist_ok=True); f = d / apf.name
@@ -77,7 +87,7 @@ def prepare(src, work, fit, licks, win, seed=1):
         seg = Y[a0:a1, :nch].astype(np.float32); seg[:, cols] += v; Y[a0:a1, :nch] = np.clip(np.round(seg), -32768, 32767).astype(np.int16)
     YA = make("A"); allc = np.arange(nch)
     for t, a, i in zip(it, sc, src_i):
-        add(YA, t - pre, t - pre + W, allc, a * amp[i, bi][None, :] * T)
+        add(YA, t - pre, t - pre + W, allc, a * (SN[i] if large_txt else amp[i, bi][None, :] * T))
     YA.flush()
     # spikes: random lick-free / near real transients / near injected ones (scale >= 0.2)
     wv = spike_wave(fs); third = N_SPIKES // 3
@@ -99,7 +109,7 @@ def prepare(src, work, fit, licks, win, seed=1):
     sos = butter(5, 300, "highpass", fs=fs, output="sos"); sp_alone = np.zeros(121); sp_alone[30:91] = wv * SPIKE_UV
     trough = float(sosfiltfilt(sos, sp_alone)[50:71].min())                                      # high-passed trough of the spike alone (uV)
     np.savetxt(work / f"{ses}_lick_onsets_window.txt", mk, fmt="%d")
-    np.savez_compressed(work / "inject.npz", session=ses, fs=fs, window=np.array(win), s0=s0, inj_t=it, inj_scale=sc, inj_src=src_i,
+    np.savez_compressed(work / "inject.npz", session=ses, fs=fs, window=np.array(win), s0=s0, inj_t=it, inj_scale=sc, inj_src=src_i, inj_kind="large" if large_txt else "template",
                         markers=mk, real_transients=cen_real, spike_t=st, spike_ch=ch, spike_kind=kind, spike_off_ms=soff, spike_trough_uv=trough,
                         uv=uv, good=good)
     print(f"{ses} {win[0]:.0f}-{win[1]:.0f} s: {k} injected transients ({N_PER_SCALE} per scale), {len(st)} spikes; A and B in {work}; "
@@ -213,7 +223,7 @@ if __name__ == "__main__":
     cmd = sys.argv[1]; args = sys.argv[2:]
     if cmd == "prepare":
         g = lambda k, n=1: args[args.index(k) + 1:args.index(k) + 1 + n]
-        prepare(args[0], args[1], g("--fit")[0], g("--licks")[0], [float(v) for v in g("--window", 2)])
+        prepare(args[0], args[1], g("--fit")[0], g("--licks")[0], [float(v) for v in g("--window", 2)], large_txt=g("--large")[0] if "--large" in args else None)
     elif cmd == "stats":
         stats(args[0], args[1])
     elif cmd == "evaluate":
