@@ -20,7 +20,9 @@ cleaned COPY of a session folder in which that transient is subtracted at every 
   4. subtract    amplitude x template at each aligned lick, from a copy of the .ap.bin (int16, rounded); only > 300 Hz content
                  is subtracted, so the LFP band is unchanged; only +-10 ms around each lick is rewritten
   5. report      lick_clean/lick_clean_report.png + lick_clean_params.json + lick_clean_fit.npz in the output session folder: lick-triggered average before / after
-                 per channel and per block, per-lick fitted sizes, alignment shifts
+                 per channel and per block, per-lick fitted sizes, alignment shifts; lick_clean/lick_clean_traces.png (2026-10-29): raw vs
+                 cleaned traces, a 2 s lick bout and three single transients, one channel per electrode block (--traces-only <raw
+                 session dir> <cleaned session dir> makes it for a session cleaned before)
 Usage:
   python lick_clean_raw.py <session_dir> <out_parent_dir>            # full session -> <out_parent_dir>/<session>/
   python lick_clean_raw.py <session_dir> <out_parent_dir> --window 740 1040    # test: only that time range (s), written as
@@ -220,6 +222,48 @@ def lick_average(X, starts, W, nch, fs, n=300):
     return S[ok].mean(0)
 
 
+def trace_report(X, Z, centres, fs, nch, blocks, T, uv, rep, ses):
+    """raw vs cleaned traces (2026-10-29, Emily: 'example traces from cleaned vs non-cleaned data, zoomed out and zoomed in'):
+    one channel per electrode block (where the template is largest), high-passed 300 Hz as the sorter sees it.
+    Top: the 2 s with the most transients (a lick bout), raw grey / cleaned black, transient times marked.
+    Bottom: +-6 ms around three transients (typical size, large, the last of the bout), raw / cleaned / removed (raw - cleaned).
+    Writes lick_clean/lick_clean_traces.png."""
+    import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+    from scipy.signal import butter, sosfiltfilt
+    sos = butter(5, 300, "highpass", fs=fs, output="sos"); pad = int(0.05 * fs)
+    ub = np.unique(blocks); chans = [int(np.flatnonzero(blocks == b)[np.argmax(np.ptp(T[:, blocks == b], axis=0))]) for b in ub]
+    def seg(A, s0, s1):
+        a0, a1 = max(0, s0 - pad), min(A.shape[0], s1 + pad)
+        x = sosfiltfilt(sos, np.asarray(A[a0:a1, :nch][:, chans], np.float64), axis=0) * uv
+        return x[s0 - a0:s0 - a0 + (s1 - s0)]
+    c = np.sort(np.asarray(centres)); win = int(2 * fs)
+    j = int(np.argmax(np.searchsorted(c, c + win) - np.arange(len(c)))); s0 = int(max(0, c[j] - 0.2 * fs)); s1 = s0 + win
+    raw, cln = seg(X, s0, s1), seg(Z, s0, s1); t = (np.arange(s1 - s0)) / fs
+    off = 1.2 * np.percentile(np.abs(raw), 99.9) if raw.size else 1.0
+    amp = np.array([np.ptp(seg(X, int(x) - 30, int(x) + 30)[:, 0]) for x in c[:: max(1, len(c) // 300)]])
+    sub = c[:: max(1, len(c) // 300)]
+    ex = [int(sub[np.argsort(amp)[len(amp) // 2]]), int(sub[np.argmax(amp)]), int(c[np.searchsorted(c, s1) - 1])]
+    fig = plt.figure(figsize=(16, 4 + 2.0 * len(chans))); gs = fig.add_gridspec(2, 3, height_ratios=[1.4, 1.0])
+    a = fig.add_subplot(gs[0, :])
+    for k, ch in enumerate(chans):
+        a.plot(t, raw[:, k] - k * off, color="0.65", lw=0.5); a.plot(t, cln[:, k] - k * off, color="k", lw=0.5)
+        a.text(t[-1], -k * off, f" ch {ch} (block {ub[k]})", fontsize=7, va="center")
+    for x in c[(c >= s0) & (c < s1)]:
+        a.axvline((x - s0) / fs, color="#d62728", lw=0.4, alpha=0.5)
+    a.set_title(f"{ses}: 2 s of a lick bout ({int(((c >= s0) & (c < s1)).sum())} transients, red lines), high-passed 300 Hz -- raw grey, cleaned black", fontsize=9)
+    a.set_xlabel("s"); a.set_yticks([]); a.set_xlim(0, t[-1] * 1.08)
+    h = int(0.006 * fs)
+    for i, (x, nm) in enumerate(zip(ex, ("typical transient", "largest transient", "last of the bout"))):
+        a = fig.add_subplot(gs[1, i]); r, z = seg(X, x - h, x + h), seg(Z, x - h, x + h); tt = (np.arange(2 * h) - h) / fs * 1000
+        o2 = 1.3 * max(np.abs(r).max(), 1.0)
+        for k in range(len(chans)):
+            a.plot(tt, r[:, k] - k * o2, color="0.65", lw=0.8); a.plot(tt, z[:, k] - k * o2, color="k", lw=0.8)
+            a.plot(tt, (r - z)[:, k] - k * o2, color="#d62728", lw=0.6, alpha=0.8)
+        a.set_title(f"{nm} (+-6 ms): raw grey, cleaned black, removed red", fontsize=8); a.set_xlabel("ms"); a.set_yticks([])
+    fig.text(0.01, 0.01, f"scale: zoomed-out channel spacing {off:.0f} uV", fontsize=7)
+    fig.tight_layout(); fig.savefig(rep / "lick_clean_traces.png", dpi=110); plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("session_dir"); ap.add_argument("out_parent")
@@ -237,7 +281,22 @@ def main():
                          "wanders or misses licks")
     ap.add_argument("--licks", default=None, help="text file, one lick onset per line as an Imec AP sample index (instead of the "
                     "session folder's sync file -- use when that copy may be outdated, e.g. before the 2026-09 lick-polarity fix)")
+    ap.add_argument("--traces-only", action="store_true", help="for a session already cleaned: <session_dir> = the raw session folder, "
+                    "<out_parent> = the CLEANED session folder; writes only lick_clean/lick_clean_traces.png into it")
     a = ap.parse_args()
+    if a.traces_only:
+        src, cl = Path(a.session_dir).resolve(), Path(a.out_parent).resolve(); ses = src.name
+        apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = read_meta(apf.with_suffix(".meta"))
+        fs = float(M.get("imSampRate", FS_DEFAULT)); nsv = int(M["nSavedChans"]); nch = nsv - 1
+        uv = float(M["imAiRangeMax"]) / float(M["imMaxInt"]) / float(M.get("imChan0apGain", 100)) * 1e6
+        sh, y = geometry(M); blocks = sh * 2 + (y > SPLIT_UM)
+        X = np.memmap(apf, dtype=np.int16, mode="r").reshape(-1, nsv); Z = np.memmap(next((cl / f"{ses}_imec0").glob("*.ap.bin")), dtype=np.int16, mode="r").reshape(-1, nsv)
+        F = np.load(cl / "lick_clean" / "lick_clean_fit.npz")
+        if "template" not in F:
+            sys.exit(f"{ses}: copy was left uncleaned (no transients fitted) -- no trace figure")
+        T = F["template"]; pre = int(PRE_MS * fs / 1000)
+        trace_report(X, Z, F["starts"] + pre, fs, nch, blocks, T, uv, cl / "lick_clean", ses); log("written:", cl / "lick_clean" / "lick_clean_traces.png")
+        return
     src = Path(a.session_dir).resolve(); ses = src.name; final = Path(a.out_parent).resolve() / ses
     dst = final.with_name(ses + ".partial")                 # written here, renamed when complete (safe if the job is requeued)
     apf = next((src / f"{ses}_imec0").glob("*.ap.bin")); M = read_meta(apf.with_suffix(".meta"))
@@ -357,6 +416,10 @@ def main():
         fig.tight_layout(); fig.savefig(rep / "lick_clean_report.png", dpi=100)
     except Exception as e:
         log("report figure skipped:", e)
+    try:
+        trace_report(Xin, Z, np.asarray(est["starts"]) + est["pre"], fs, nch, blocks, T, uv, rep, ses)
+    except Exception as e:
+        log("trace figure skipped:", e)
     dst.rename(final); log("done:", final)
 
 
