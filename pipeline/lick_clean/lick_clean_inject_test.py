@@ -179,7 +179,13 @@ def evaluate(work, runs):
         over, mabs = [], []
         for t in real_t:
             x = np.abs(seg(ZA, int(t))); over.append(((x / nz).max(0) > 5).sum()); mabs.append(x.mean(0))
-        res_ch = dict(transients=int(len(real_t)), channels_over_5sd_per_transient=float(np.mean(over)) if over else None,
+        over_i, mabs_i = [], []                                               # the same at the INJECTED transients that were found
+        for t in it[found][:300]:
+            if 2000 < t < ZA.shape[0] - 2000:
+                x = np.abs(seg(ZA, int(t))); over_i.append(((x / nz).max(0) > 5).sum()); mabs_i.append(x.mean(0))
+        res_ch_inj = dict(n=len(over_i), channels_over_5sd_per_transient=float(np.mean(over_i)) if over_i else None,
+                          residual_uv_p95_channel=float(np.percentile(np.mean(mabs_i, 0), 95)) if mabs_i else None)
+        res_ch = dict(transients=int(len(real_t)), channels_over_5sd_per_transient=float(np.mean(over)) if over else None, injected=res_ch_inj,
                       residual_uv_p95_channel=float(np.percentile(np.mean(mabs, 0), 95)) if mabs else None,
                       residual_uv_median_channel=float(np.median(np.mean(mabs, 0))) if mabs else None, noise_uv_median=float(np.median(nz)))
         res[name] = dict(injected_found_by_scale=by_scale, injected_found_all=float(found.mean()), cleaned_events=int(len(cA)), residual_after_real=res_ch,

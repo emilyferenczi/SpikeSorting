@@ -455,6 +455,9 @@ def main():
                     help="with --find detect: also clean events, whatever their shape, with whitened common-mode energy >= E and >= BZ x "
                          "noise on >= NB blocks at once (big, differently shaped contact transients); each is removed with its own "
                          "block common mode scaled per channel (-1..+3 ms), then the patch / block median. 2026-10-29: 30 8 3")
+    ap.add_argument("--large-model", choices=["cm", "lowrank"], default="cm", help="large events: cm = each one's own per-channel-scaled "
+                    "block common mode (default); lowrank = their own k-component model learned from the large events (>= 20; else cm)")
+    ap.add_argument("--large-patch-ms", type=float, default=None, help="straight-line patch half-width for large events (default: --patch-ms)")
     ap.add_argument("--residual-pass", action="store_true", help="after cleaning, detect again on the CLEANED file with the first "
                     "pass's template (and --low-rule / --marker-pass), clean the new events (> 1 ms from every cleaned one) with the "
                     "first pass's model: transients hidden by the 15-ms one-per-window rule or by a bigger one")
@@ -558,18 +561,19 @@ def main():
         sos_sc = butter(5, 300, "highpass", fs=fs, output="sos"); lo_sc, hi_sc = est["pre"] - sc0 - nt, est["pre"] + sc1 + nt + 1
         wsc = np.ones(hi_sc - lo_sc, np.float32); rr = 0.5 - 0.5 * np.cos(np.pi * np.arange(1, nt + 1) / (nt + 1)); wsc[:nt] = rr; wsc[-nt:] = rr[::-1]
         log(f"  then each block's median (high-passed, {int(good.sum())} working channels) subtracted from -{sc[0]} to +{sc[1]} ms")
-    def rem_lowrank(cf, i):
+    def rem_lowrank(cf, i, bs=None):
         rem = np.zeros((W, nch), np.float32)
-        for b, B in basis.items():
+        for b, B in (bs or basis).items():
             m = blocks == b; rem[:, m] = (cf[b][i] @ B).reshape(W, m.sum())
         return rem
 
-    def clean_events(Y, starts, rem_of):
+    def clean_events(Y, starts, rem_of, hp_=None):
+      hpx = hp if hp_ is None else hp_
       for i, s in enumerate(starts):
         rem = rem_of(i)
         seg = Y[s:s + W, :nch].astype(np.float32) - rem
-        if hp:   # straight line over the transient's peak (what the model cannot follow when the transient is 2-3 samples wide)
-            c = est["pre"]; a0, a1 = c - hp - 1, c + hp + 1; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
+        if hpx:   # straight line over the transient's peak (what the model cannot follow when the transient is 2-3 samples wide)
+            c = est["pre"]; a0, a1 = c - hpx - 1, c + hpx + 1; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
             seg[a0:a1 + 1] = seg[a0] * (1 - wl) + seg[a1] * wl
         if sc:
             e0, e1 = max(0, s - mg2), min(Y.shape[0], s + W + mg2)
@@ -595,8 +599,17 @@ def main():
                 m_ = np.median(hx[sl][:, ci], 1); g = (hx[sl][:, ci] * m_[:, None]).sum(0) / ((m_ ** 2).sum() + 1e-9)
                 rem[sl, ci] = (wL * m_)[:, None] * g[None, :]
             return rem
-        log(f"large events (shape-free rule): {len(large)}, each removed with its own per-channel-scaled block common mode")
-        clean_events(Y, large - est["pre"], rem_large)
+        hpL = int(round(a.large_patch_ms * fs / 1000)) if a.large_patch_ms is not None else hp
+        if a.large_model == "lowrank" and len(large) >= 20:
+            # 2026-10-30: the large transients' OWN model (the residue of the shape-free removal was sorted into a real unit in 1015
+            # EF407): aligned to their own median within +-JIT_MS, k components per block from these events only
+            estL, AL = estimate(Xin, large, fs, nch, blocks, find_offset=False); basisL, coefL = lowrank(AL, blocks, estL["tap"], a.k); del AL
+            large = np.asarray(estL["starts"]) + est["pre"]
+            log(f"large events (shape-free rule): {len(large)}, removed with their own model ({a.k} components per block), patch +-{hpL} samples")
+            clean_events(Y, large - est["pre"], lambda i: rem_lowrank(coefL, i, basisL), hp_=hpL)
+        else:
+            log(f"large events (shape-free rule): {len(large)}, each removed with its own per-channel-scaled block common mode, patch +-{hpL} samples")
+            clean_events(Y, large - est["pre"], rem_large, hp_=hpL)
     Y.flush(); del Y
     starts_all, res_rep, starts2 = np.sort(np.concatenate([np.asarray(est["starts"]), large - est["pre"]])), None, np.array([], np.int64)
     if a.residual_pass and a.find == "detect" and a.model == "lowrank":
@@ -620,7 +633,7 @@ def main():
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
                 patch_ms=a.patch_ms, patch_samples=hp, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
-                low_rule=a.low_rule, large_rule=a.large_rule, n_large=int(len(large)), residual_pass=res_rep, n_cleaned_total=int(len(starts_all)),
+                low_rule=a.low_rule, large_rule=a.large_rule, n_large=int(len(large)), large_model=a.large_model, large_patch_ms=a.large_patch_ms, residual_pass=res_rep, n_cleaned_total=int(len(starts_all)),
                 patched_ms_total=float(len(starts_all) * (2 * hp + 1) / fs * 1000) if hp else 0.0,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
