@@ -167,7 +167,22 @@ def evaluate(work, runs):
         near_any = kinds != "random"; bins = [-2, -0.5, -0.2, -0.1, 0.1, 0.2, 0.5, 1, 3]
         by_off = {f"{lo:+g}..{hi:+g} ms": float(np.nanmedian(kept[near_any & (off >= lo) & (off < hi)])) if (near_any & (off >= lo) & (off < hi)).any() else None
                   for lo, hi in zip(bins[:-1], bins[1:])}
-        res[name] = dict(injected_found_by_scale=by_scale, injected_found_all=float(found.mean()), cleaned_events=int(len(cA)),
+        # 2026-10-30: per-channel residual after the REAL transients (cleaned copy A; the residual that contaminated real units in
+        # 0604 EF401: -0.5..+2.5 ms): per transient, the channels whose high-passed |value| exceeds 5 x their noise in that window
+        # (noise = robust SD at the random spike-free control sites); mean over transients, and the 95th-percentile channel's
+        # mean |residual| in uV
+        rng_r = np.random.default_rng(5); real_t = I["real_transients"][(I["real_transients"] > 2000) & (I["real_transients"] < ZA.shape[0] - 2000)]
+        real_t = np.sort(rng_r.choice(real_t, min(300, len(real_t)), replace=False)) if len(real_t) else real_t
+        ctrl = I["spike_t"][I["spike_kind"] == "random"] + int(0.02 * fs)
+        good = np.asarray(I["good"]); seg = lambda Z_, t: sosfiltfilt(sos, np.asarray(Z_[t - 900:t + 900, :nch], np.float64)[:, good], axis=0)[900 - ms(0.5):900 + ms(2.5)] * uv
+        nz = 1.4826 * np.median(np.abs(np.concatenate([seg(ZA, int(t)) for t in ctrl[:60]])), 0) + 1e-6
+        over, mabs = [], []
+        for t in real_t:
+            x = np.abs(seg(ZA, int(t))); over.append(((x / nz).max(0) > 5).sum()); mabs.append(x.mean(0))
+        res_ch = dict(transients=int(len(real_t)), channels_over_5sd_per_transient=float(np.mean(over)) if over else None,
+                      residual_uv_p95_channel=float(np.percentile(np.mean(mabs, 0), 95)) if mabs else None,
+                      residual_uv_median_channel=float(np.median(np.mean(mabs, 0))) if mabs else None, noise_uv_median=float(np.median(nz)))
+        res[name] = dict(injected_found_by_scale=by_scale, injected_found_all=float(found.mean()), cleaned_events=int(len(cA)), residual_after_real=res_ch,
                          cleaned_events_far_from_licks_and_injections=int(len(far_det)), far_per_min=float(len(far_det) / (A.shape[0] / fs / 60)),
                          detections_caused_by_spikes=int(len(new_in_B)), spikes=spike, spikes_near_transients_kept_by_offset=by_off,
                          patched_ms=float(len(cA) * 0.27))

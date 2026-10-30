@@ -24,6 +24,8 @@ declare -A CFG=(
   [finalL]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3"
   [finalC]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3"
   [finalCL]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3"
+  [finalCLk5]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --k 5"
+  [finalCLk8]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --k 8"
 )
 # (finalC / finalCL: the same options as final / finalL with the per-session calibrated, lick-only lower threshold, fork 2026-10-29 17:00)
 [ -n "${ONLY:-}" ] && { for c in "${!CFG[@]}"; do [[ " $ONLY " == *" $c "* ]] || unset "CFG[$c]"; done; }   # ONLY="final" runs only those
