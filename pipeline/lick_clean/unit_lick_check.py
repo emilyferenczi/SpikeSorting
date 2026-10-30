@@ -19,7 +19,8 @@ chosen from the pilot (Emily).
 Reads the CLEANED recording (high-passed 300 Hz, 4-s chunks) twice: pass 1 picks each unit's channels from its far mean (skipped
 with --chans-from <earlier unit_lick_check.npz of the same sort>), pass 2 reads the sampled spikes on those channels.
 Writes <out>/unit_lick_check.csv / .json / .npz.
-Run: python unit_lick_check.py <cleaned session dir> <sort AIND_<session> dir> <out dir> [--chans-from <npz>]   (numpy / scipy only)
+--events <npy of sample times> replaces the contacts by other events (2026-10-30: probe-wide events 10-30 ms after the Go cue).
+Run: python unit_lick_check.py <cleaned session dir> <sort AIND_<session> dir> <out dir> [--chans-from <npz>] [--events <npy>]   (numpy / scipy)
 """
 import csv
 import json
@@ -81,7 +82,10 @@ def main():
     Z = np.memmap(apf, dtype=np.int16, mode="r").reshape(-1, nsv); n = Z.shape[0]; good = LS.working_channels(Z, nch, fs)
     F = np.load(cl / "lick_clean" / "lick_clean_fit.npz", allow_pickle=True); pre = int(LC.PRE_MS * fs / 1000)
     ev = np.unique(np.asarray(F["starts"], np.int64) + pre) if "starts" in F else np.array([], np.int64)
-    large = np.unique(np.asarray(F["large"], np.int64)) if "large" in F else np.array([], np.int64); normal = np.setdiff1d(ev, large)
+    large = np.unique(np.asarray(F["large"], np.int64)) if "large" in F else np.array([], np.int64)
+    if "--events" in sys.argv:          # other event times instead of the contacts (e.g. probe-wide events after the Go cue), as samples
+        ev = np.unique(np.load(sys.argv[sys.argv.index("--events") + 1]).astype(np.int64)); large = np.array([], np.int64)
+    normal = np.setdiff1d(ev, large)
     st = np.load(sd / "spike_times.npy").astype(np.int64).ravel(); clu = np.load(sd / "spike_clusters.npy").ravel(); units = np.unique(clu)
     o = np.argsort(st, kind="stable"); st, clu = st[o], clu[o]
     ms = lambda v: int(round(v * fs / 1000)); a0, a1 = ms(PRE_W), ms(POST_W); L = a0 + a1; rng = np.random.default_rng(0)

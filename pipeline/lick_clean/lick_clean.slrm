@@ -28,4 +28,10 @@ PY=/n/holylabs/LABS/bsabatini_lab/Users/eferenczi/envs/raw_extract/bin/python
 mkdir -p "$OUT"
 echo "[$(date)] $SRC -> $OUT on $(hostname)"
 "$PY" "${SLURM_SUBMIT_DIR:?}/pipeline/lick_clean/lick_clean_raw.py" "$SRC" "$OUT" "${@:3}"   # extra options, e.g. --licks <file>
+# cleaned - raw difference (kept with the sort, so the cleaning can be rebuilt and looked at later without the cleaned copy) + check
+# that nothing outside the cleaning windows changed (2026-10-30)
+CL="$OUT/$(basename "$SRC")"
+if [ -f "$CL/lick_clean/lick_clean_fit.npz" ] && [ ! -f "$CL/lick_clean/lick_clean_diff.json" ]; then
+  "$PY" "${SLURM_SUBMIT_DIR:?}/pipeline/lick_clean/lick_clean_diff.py" "$SRC" "$CL"
+fi
 echo "[$(date)] done"
