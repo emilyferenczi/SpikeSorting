@@ -56,6 +56,7 @@ wait_other_sorts() {   # another resort_batch.sh or launcher on this login node 
 }
 
 tar_and_tidy() {
+  pipeline/lick_clean/unit_check_batch.sh "$BASE" $1          # per-unit lick check while the cleaned copies still exist (2026-10-30)
   for s in $1; do
     t="$TR/${s}_v2.tar"
     if [ ! -f "$t" ]; then

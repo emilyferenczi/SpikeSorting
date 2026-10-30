@@ -50,7 +50,9 @@ if [ -n "$(ls -A "$TODO")" ]; then
   pipeline/shun_spikesort_pipeline.sh pipeline/spike_sort.slrm "$PROFILE" || echo "[$(date)] the launcher reported problems -- see above"
 fi
 
-# 4. one tar per sorted session: the AIND output + its cleaning report
+# 4. per-unit lick check while the cleaned copies still exist (unit_check_batch.sh, 2026-10-30), then one tar per sorted session:
+#    the AIND output (incl. unit_lick_check/) + its cleaning report
+pipeline/lick_clean/unit_check_batch.sh "$BASE" "$@"
 for s in "$@"; do
   t="$TR/${s}_v2.tar"
   [ -f "$t" ] && { echo "  $s: $t exists"; continue; }
