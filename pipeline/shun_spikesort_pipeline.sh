@@ -531,8 +531,22 @@ if [ "$total_pending" -gt 0 ]; then
                 completed=0
                 other=0
                 for jid in "${job_ids[@]}"; do
-                    state=$(squeue -h -j "$jid" -o "%t" 2>/dev/null | head -n 1)
+                    # EF 2026-10-30: a failing squeue (scheduler outage, config error) used to count as "job finished", so the
+                    # launcher checked / exported a session that was still sorting. Done only when squeue answers without the
+                    # job AND sacct reports a final state; otherwise look again next round.
+                    if ! sq=$(squeue -h -j "$jid" -o "%t" 2>/dev/null); then
+                        sq=$(sacct -X -n -j "$jid" -o State 2>/dev/null | head -n 1 | tr -d ' ')
+                        case "$sq" in
+                            COMPLETED|FAILED|CANCELLED*|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|PREEMPTED|BOOT_FAIL|DEADLINE) completed=$((completed + 1)); continue ;;
+                            *) all_done=false; other=$((other + 1)); continue ;;
+                        esac
+                    fi
+                    state=$(echo "$sq" | head -n 1)
                     if [ -z "$state" ]; then
+                        fin=$(sacct -X -n -j "$jid" -o State 2>/dev/null | head -n 1 | tr -d ' ')
+                        case "$fin" in
+                            RUNNING|PENDING|REQUEUED|RESIZING|SUSPENDED|COMPLETING) all_done=false; other=$((other + 1)); continue ;;
+                        esac
                         completed=$((completed + 1))
                         continue
                     fi
