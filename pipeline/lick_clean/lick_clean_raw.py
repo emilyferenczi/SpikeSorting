@@ -461,6 +461,13 @@ def main():
     ap.add_argument("--residual-pass", action="store_true", help="after cleaning, detect again on the CLEANED file with the first "
                     "pass's template (and --low-rule / --marker-pass), clean the new events (> 1 ms from every cleaned one) with the "
                     "first pass's model: transients hidden by the 15-ms one-per-window rule or by a bigger one")
+    ap.add_argument("--burst-pass", nargs=3, type=float, default=None, metavar=("E", "ELO", "BZ"),
+                    help="last: probe-wide events that are not lick contacts (2026-10-30: muscle-like bursts ~19 ms after cues, on one "
+                         "block, sorted as spikes): whitened block common-mode energy >= E (the scan's measure) -> the stretch where it "
+                         "stays >= ELO, +-0.5 ms; on every block reaching >= BZ x its noise there, that block's median (high-passed) is "
+                         "subtracted from its working channels, cosine edges (no per-channel scaling: it removed spikes). Prototype on "
+                         "EF384 Go-cue bursts (12 4 4): block RMS during bursts 1.6-1.7x -> 1.2-1.3x baseline, 80-uV spikes on them keep "
+                         "100%% (median; worst 83-89%%)")
     ap.add_argument("--no-scan", action="store_true", help="skip the whole-recording scan (lick_clean_scan.py) at the end")
     ap.add_argument("--scan-only", action="store_true", help="for a session already cleaned: <session_dir> = the raw session folder, "
                     "<out_parent> = the CLEANED session folder; writes only lick_clean/lick_clean_scan.npz / .json")
@@ -628,12 +635,45 @@ def main():
             Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
             clean_events(Y, starts2, lambda i: rem_lowrank(coef2, i)); Y.flush(); del Y
             starts_all = np.sort(np.concatenate([starts_all, starts2]))
+    bursts, burst_rep = (np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros(0, np.uint16)), None
+    if a.burst_pass:   # 2026-10-30: probe-wide bursts that are not lick contacts, each block's median over the burst
+        import lick_clean_scan
+        Eh, El, Bz = a.burst_pass; Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
+        goodB = lick_clean_scan.working_channels(Xin, nch, fs); ubB = np.unique(blocks); chB = [np.flatnonzero((blocks == b) & goodB) for b in ubB]
+        log(f"burst pass: block common modes of the cleaned file ({int(goodB.sum())} working channels)")
+        cmB = lick_clean_scan.block_cm(Y, nch, blocks, ubB, goodB, fs); sigB = 1.4826 * np.median(np.abs(cmB), 0) + 1e-6
+        eB = np.sqrt(((cmB / sigB) ** 2).sum(1)); dB = np.diff(np.r_[0, (eB >= El).astype(np.int8), 0]); r0, r1 = np.flatnonzero(dB == 1), np.flatnonzero(dB == -1)
+        mx = np.maximum.reduceat(np.r_[eB, 0], np.column_stack([r0, r1]).ravel())[::2] if len(r0) else np.zeros(0)
+        keep = mx >= Eh; padB = int(0.0005 * fs); r0, r1 = np.maximum(r0[keep] - padB, 0), np.minimum(r1[keep] + padB, len(eB))
+        if len(r0):   # merge overlapping stretches
+            st_, en_ = [int(r0[0])], [int(r1[0])]
+            for u, v in zip(r0[1:], r1[1:]):
+                if u <= en_[-1]:
+                    en_[-1] = max(en_[-1], int(v))
+                else:
+                    st_.append(int(u)); en_.append(int(v))
+            r0, r1 = np.asarray(st_, np.int64), np.asarray(en_, np.int64)
+        bm = np.zeros(len(r0), np.uint16)
+        for i, (u, v) in enumerate(zip(r0, r1)):
+            hit = np.flatnonzero(np.abs(cmB[u:v] / sigB).max(0) >= Bz); nt = min(6, (v - u) // 4)
+            w = np.ones(v - u, np.float32)
+            if nt:
+                rr = 0.5 - 0.5 * np.cos(np.pi * np.arange(1, nt + 1) / (nt + 1)); w[:nt] = rr; w[-nt:] = rr[::-1]
+            for k in hit:
+                seg = Y[u:v, chB[k]].astype(np.float32) - (w * cmB[u:v, k])[:, None]
+                Y[u:v, chB[k]] = np.clip(np.round(seg), -32768, 32767).astype(np.int16); bm[i] |= np.uint16(1 << int(k))
+        Y.flush(); del Y, cmB, eB
+        bursts = (r0, r1, bm)
+        burst_rep = dict(params=dict(E=Eh, E_lo=El, block_z=Bz, pad_ms=0.5), n=int(len(r0)), total_ms=float((r1 - r0).sum() / fs * 1000),
+                         median_ms=float(np.median(r1 - r0) / fs * 1000) if len(r0) else None,
+                         per_block={int(b): int(((bm >> k) & 1).sum()) for k, b in enumerate(ubB)})
+        log(f"burst pass: {len(r0)} bursts ({burst_rep['total_ms'] / 1000:.1f} s in all), per block {burst_rep['per_block']}")
     Z = np.memmap(out_bin, dtype=np.int16, mode="r").reshape(-1, nsv)
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
                 patch_ms=a.patch_ms, patch_samples=hp, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
-                low_rule=a.low_rule, large_rule=a.large_rule, n_large=int(len(large)), large_model=a.large_model, large_patch_ms=a.large_patch_ms, residual_pass=res_rep, n_cleaned_total=int(len(starts_all)),
+                low_rule=a.low_rule, large_rule=a.large_rule, n_large=int(len(large)), large_model=a.large_model, large_patch_ms=a.large_patch_ms, residual_pass=res_rep, burst_pass=burst_rep, n_cleaned_total=int(len(starts_all)),
                 patched_ms_total=float(len(starts_all) * (2 * hp + 1) / fs * 1000) if hp else 0.0,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,
                 shift_sd_ms=float(est["shift"].std() / fs * 1000), uv_per_bit=uv,
@@ -647,6 +687,7 @@ def main():
     rep = dst / "lick_clean"; rep.mkdir(exist_ok=True)                      # report files in their own subfolder
     (rep / "lick_clean_params.json").write_text(json.dumps(summ, indent=1))
     np.savez_compressed(rep / "lick_clean_fit.npz", template=T, starts=starts_all, starts_pass1=est["starts"], starts_residual=starts2, amp=est["amp"], blocks=est["blocks"], shift=est["shift"],
+                        burst_start=bursts[0], burst_end=bursts[1], burst_blocks=bursts[2],
                         model=a.model, find=a.find, **({f"basis_{b}": B for b, B in basis.items()} | {f"coef_{b}": c for b, c in coef.items()} if a.model == "lowrank" else {}),
                         **(dict(detected=trig, detect_z=det_x["z"], detect_r=det_x["r"], detect_template=det_x["template"], markers=marker_trig,
                                 marker_pass=det_x.get("marker_pass", np.array([], np.int64)), detect_low_only=det_x.get("low_only", np.array([], bool)),

@@ -38,6 +38,8 @@ def main():
     F = np.load(cl / "lick_clean" / "lick_clean_fit.npz", allow_pickle=True)
     W = int((LC.PRE_MS + LC.POST_MS) * fs / 1000); J = int(LC.JIT_MS * fs / 1000)
     s = np.unique(np.asarray(F["starts"], np.int64)); win = (s - J, s + W + J)            # expected windows
+    if "burst_start" in F and len(F["burst_start"]):                                      # + the burst pass's stretches
+        win = (np.r_[win[0], np.asarray(F["burst_start"], np.int64)], np.r_[win[1], np.asarray(F["burst_end"], np.int64)])
     C = int(4 * fs); runs, diffs, n_sync, n_clip, dmax = [], [], 0, 0, 0
     for c0 in range(0, n, C):
         x = np.asarray(X[c0:c0 + C], np.int32); y = np.asarray(Y[c0:c0 + C], np.int32); d = y - x
