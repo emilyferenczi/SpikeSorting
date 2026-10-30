@@ -132,12 +132,16 @@ def scan(X, Z, F, fs, nch, blocks, uv, rep, ses, log=print):
                 c[key]["away_per_min"] = c[key]["away_from_licks"] / max(free_min, 1e-9)
         if len(cen):     # per cleaned transient: is there an event at it / just after it
             ms_ = lambda v: int(round(v * fs / 1000)); hit = en >= THR[0]; ph = pk[hit]
-            j = np.searchsorted(ph, cen - ms_(CORE_MS)); at = (j < len(ph)) & (ph[np.minimum(j, len(ph) - 1)] <= cen + ms_(CORE_MS))
-            j2 = np.searchsorted(ph, cen + ms_(CORE_MS) + 1); af = (j2 < len(ph)) & (ph[np.minimum(j2, len(ph) - 1)] <= cen + ms_(AFTER_MS))
+            if len(ph):
+                j = np.searchsorted(ph, cen - ms_(CORE_MS)); at = (j < len(ph)) & (ph[np.minimum(j, len(ph) - 1)] <= cen + ms_(CORE_MS))
+                j2 = np.searchsorted(ph, cen + ms_(CORE_MS) + 1); af = (j2 < len(ph)) & (ph[np.minimum(j2, len(ph) - 1)] <= cen + ms_(AFTER_MS))
+            else:   # no event left at all (e.g. after --burst-pass, which removes every event at this threshold; 2026-10-30)
+                at = af = np.zeros(len(cen), bool)
             c["transients_with_event_at"] = float(at.mean()); c["transients_with_event_after"] = float(af.mean())
         if len(mk_missed) and lagwin is not None:
             ph = pk[(en >= THR[0]) & (r >= SHAPE_R)] if U is not None else pk[en >= THR[0]]
-            j = np.searchsorted(ph, mk_missed + lagwin[0]); hm = (j < len(ph)) & (ph[np.minimum(j, len(ph) - 1)] <= mk_missed + lagwin[1])
+            j = np.searchsorted(ph, mk_missed + lagwin[0])
+            hm = (j < len(ph)) & (ph[np.minimum(j, len(ph) - 1)] <= mk_missed + lagwin[1]) if len(ph) else np.zeros(len(mk_missed), bool)
             c["markers_without_transient_with_event"] = int(hm.sum())
         summ["files"][nm] = c; CM[nm] = cm
         log(f"  {nm}: {len(pk)} candidate events; at energy >= {THR[0]:g}: " + ", ".join(f"{k} {v}" for k, v in c[f'e{THR[0]:g}'].items()))
