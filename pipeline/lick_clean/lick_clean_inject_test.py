@@ -176,9 +176,10 @@ def evaluate(work, runs):
         ctrl = I["spike_t"][I["spike_kind"] == "random"] + int(0.02 * fs)
         good = np.asarray(I["good"]); seg = lambda Z_, t: sosfiltfilt(sos, np.asarray(Z_[t - 900:t + 900, :nch], np.float64)[:, good], axis=0)[900 - ms(0.5):900 + ms(2.5)] * uv
         nz = 1.4826 * np.median(np.abs(np.concatenate([seg(ZA, int(t)) for t in ctrl[:60]])), 0) + 1e-6
-        over, mabs = [], []
+        over, mabs, edge = [], [], []
         for t in real_t:
             x = np.abs(seg(ZA, int(t))); over.append(((x / nz).max(0) > 5).sum()); mabs.append(x.mean(0))
+            edge.append(((x[ms(0.65):ms(1.0)] / nz).max(0) > 5).sum())   # 2026-10-31: +0.15..+0.5 ms, just after the patch's trailing edge
         over_i, mabs_i = [], []                                               # the same at the INJECTED transients that were found
         for t in it[found][:300]:
             if 2000 < t < ZA.shape[0] - 2000:
@@ -186,6 +187,7 @@ def evaluate(work, runs):
         res_ch_inj = dict(n=len(over_i), channels_over_5sd_per_transient=float(np.mean(over_i)) if over_i else None,
                           residual_uv_p95_channel=float(np.percentile(np.mean(mabs_i, 0), 95)) if mabs_i else None)
         res_ch = dict(transients=int(len(real_t)), channels_over_5sd_per_transient=float(np.mean(over)) if over else None, injected=res_ch_inj,
+                      channels_over_5sd_post_patch=float(np.mean(edge)) if edge else None,
                       residual_uv_p95_channel=float(np.percentile(np.mean(mabs, 0), 95)) if mabs else None,
                       residual_uv_median_channel=float(np.median(np.mean(mabs, 0))) if mabs else None, noise_uv_median=float(np.median(nz)))
         res[name] = dict(injected_found_by_scale=by_scale, injected_found_all=float(found.mean()), cleaned_events=int(len(cA)), residual_after_real=res_ch,

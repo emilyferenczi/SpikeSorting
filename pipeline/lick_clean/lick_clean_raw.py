@@ -433,6 +433,9 @@ def main():
                     help="after the subtraction, replace +-this many ms around each transient's peak by a straight line on every "
                          "channel (2026-10-25: 0.13 ms removed every remaining artifact peak on 20260825_EF405_g0, whose transient is "
                          "2-3 samples wide; costs the real signal in those 0.27 ms per transient). 0 = off")
+    ap.add_argument("--patch-post-ms", type=float, default=0.0, help="extend the straight-line patch this much further AFTER each "
+                    "transient's peak (2026-10-31: the leftover at the patch's trailing edge, +0.13..+0.4 ms, is sorted as spikes in "
+                    "some multi-units -- 0610 EF384 5.5x their own rate there). 0 = symmetric patch")
     ap.add_argument("--find", choices=["markers", "detect"], default="markers",
                     help="markers: clean at the lick markers (+ the session offset, +-3 ms); detect: find the transients by their "
                          "shape over the whole recording (lick markers only seed the template) -- for sessions whose marker timing "
@@ -563,6 +566,7 @@ def main():
     before = lick_average(Xin, est["starts"], W, nch, fs)
     Y = np.memmap(out_bin, dtype=np.int16, mode="r+").reshape(-1, nsv)
     hp = int(round(a.patch_ms * fs / 1000)) if a.patch_ms else 0
+    hpost = int(round(a.patch_post_ms * fs / 1000)) if (a.patch_ms and a.patch_post_ms) else 0
     log("subtracting" + (f", then a straight line over +-{hp} samples at each transient's peak" if hp else ""))
     sc = a.second_contact_ms
     if sc:   # block median subtraction around each transient (2026-10-29: second contacts follow 15-48% of transients)
@@ -584,7 +588,7 @@ def main():
         rem = rem_of(i)
         seg = Y[s:s + W, :nch].astype(np.float32) - rem
         if hpx:   # straight line over the transient's peak (what the model cannot follow when the transient is 2-3 samples wide)
-            c = est["pre"]; a0, a1 = c - hpx - 1, c + hpx + 1; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
+            c = est["pre"]; a0, a1 = c - hpx - 1, c + hpx + 1 + hpost; wl = np.linspace(0, 1, a1 - a0 + 1)[:, None]
             seg[a0:a1 + 1] = seg[a0] * (1 - wl) + seg[a1] * wl
         if sc:
             e0, e1 = max(0, s - mg2), min(Y.shape[0], s + W + mg2)
@@ -676,7 +680,7 @@ def main():
     after = lick_average(Z, est["starts"], W, nch, fs)
     core = slice(est["pre"] - int(CORE_MS * fs / 1000), est["pre"] + int(CORE_MS * fs / 1000))
     summ = dict(session=ses, window_s=a.window, cleaned=True, model=a.model, k=a.k if a.model == "lowrank" else None, find=a.find, detection=det_rep,
-                patch_ms=a.patch_ms, patch_samples=hp, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
+                patch_ms=a.patch_ms, patch_samples=hp, patch_post_ms=a.patch_post_ms, patch_post_samples=hpost, second_contact_ms=sc, marker_pass=bool(a.marker_pass), code_version=code_version(),
                 low_rule=a.low_rule, large_rule=a.large_rule, n_large=int(len(large)), large_model=a.large_model, large_patch_ms=a.large_patch_ms, residual_pass=res_rep, burst_pass=burst_rep, n_cleaned_total=int(len(starts_all)),
                 patched_ms_total=float(len(starts_all) * (2 * hp + 1) / fs * 1000) if hp else 0.0,
                 n_licks=int(len(est["starts"])), offset_ms=est["offset"] / fs * 1000,

@@ -27,6 +27,9 @@ declare -A CFG=(
   [finalCLk5]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --k 5"
   [finalCLm]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank"
   [finalCLmP]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank --large-patch-ms 0.27"
+  [prod4]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank --burst-pass 12 4 4 --burst-pad-ms 4"
+  [prod4T2]="--find detect --patch-ms 0.13 --patch-post-ms 0.07 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank --burst-pass 12 4 4 --burst-pad-ms 4"
+  [prod4T4]="--find detect --patch-ms 0.13 --patch-post-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank --burst-pass 12 4 4 --burst-pad-ms 4"
   [finalCLk8]="--find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --k 8"
 )
 # (finalC / finalCL: the same options as final / finalL with the per-session calibrated, lick-only lower threshold, fork 2026-10-29 17:00)
