@@ -22,6 +22,7 @@ import lick_clean_raw as LC
 
 def cleaned_window(X, D, s0, s1):
     """cleaned samples s0:s1 (all saved channels) from the raw memmap X (n x nSavedChans) and a loaded lick_clean_diff.npz D"""
+    s0, s1 = max(int(s0), 0), min(int(s1), X.shape[0])                  # 2026-10-31: windows reaching past either end of the file
     out = np.asarray(X[s0:s1], np.int32); st, en, off = D["run_start"], D["run_end"], D["run_offset"]; nch = int(D["n_channels"])
     for i in range(np.searchsorted(en, s0, "right"), np.searchsorted(st, s1, "left")):
         a, b = max(st[i], s0), min(en[i], s1)
@@ -74,7 +75,7 @@ def main():
     # rebuild test on a few runs
     D = np.load(out); rb = True
     for i in np.linspace(0, len(rs) - 1, min(len(rs), 20)).astype(int) if len(rs) else []:
-        a, b = int(rs[i]) - 50, int(re_[i]) + 50; rb &= bool(np.array_equal(cleaned_window(X, D, a, b), np.asarray(Y[a:b])))
+        a, b = max(int(rs[i]) - 50, 0), min(int(re_[i]) + 50, n); rb &= bool(np.array_equal(cleaned_window(X, D, a, b), np.asarray(Y[a:b])))
     ok["rebuild_exact"] = rb
     rep = dict(session=ses, ok=all(ok.values()), checks=ok, n_samples=int(n), changed_samples=nchg, changed_pct=round(100 * nchg / max(n, 1), 3),
                runs=int(len(rs)), samples_stored=int((re_ - rs).sum()), changed_outside_windows=outside, sync_changed=n_sync, clipped=n_clip,
