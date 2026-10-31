@@ -21,8 +21,9 @@ def main():
     fs = float(M.get("imSampRate", LC.FS_DEFAULT)); nch = nsv - 1
     uv = float(M["imAiRangeMax"]) / float(M["imMaxInt"]) / float(M.get("imChan0apGain", 100)) * 1e6
     sh, y = LC.geometry(M); blocks = sh * 2 + (y > LC.SPLIT_UM)
-    ev = np.sort(np.load(ef).astype(np.int64)); ev = ev[np.linspace(0, len(ev) - 1, min(N, len(ev))).astype(int)]
     sos = butter(5, 300, "highpass", fs=fs, output="sos"); h, mg = int(0.020 * fs), int(0.03 * fs)
+    n = min(len(X) for X in ap.values()); ev = np.sort(np.load(ef).astype(np.int64)); ev = ev[(ev > h + mg) & (ev < n - h - mg)]   # whole window inside the file
+    ev = ev[np.linspace(0, len(ev) - 1, min(N, len(ev))).astype(int)]
     res = {}
     for lab, X in ap.items():
         res[f"tr_{lab}"] = np.stack([sosfiltfilt(sos, np.asarray(X[t - h - mg:t + h + mg, :nch], np.float32), axis=0)[mg:mg + 2 * h] * uv
