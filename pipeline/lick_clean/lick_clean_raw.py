@@ -461,6 +461,10 @@ def main():
     ap.add_argument("--residual-pass", action="store_true", help="after cleaning, detect again on the CLEANED file with the first "
                     "pass's template (and --low-rule / --marker-pass), clean the new events (> 1 ms from every cleaned one) with the "
                     "first pass's model: transients hidden by the 15-ms one-per-window rule or by a bigger one")
+    ap.add_argument("--burst-pad-ms", type=float, default=0.5, help="with --burst-pass: the median is subtracted this far beyond the "
+                    "burst core (>= ELO) on both sides. 2026-10-31 prototype on the EF384 Go-cue bursts (overlapping windows merged): "
+                    "0.5 ms leaves the oscillation's outer cycles (block RMS -8..+8 ms 1.6x baseline), 4 ms brings it to baseline "
+                    "(0.94-1.00x) with 80-uV spikes on the bursts keeping 97%% (median; worst 95%%)")
     ap.add_argument("--burst-pass", nargs=3, type=float, default=None, metavar=("E", "ELO", "BZ"),
                     help="last: probe-wide events that are not lick contacts (2026-10-30: muscle-like bursts ~19 ms after cues, on one "
                          "block, sorted as spikes): whitened block common-mode energy >= E (the scan's measure) -> the stretch where it "
@@ -644,7 +648,7 @@ def main():
         cmB = lick_clean_scan.block_cm(Y, nch, blocks, ubB, goodB, fs); sigB = 1.4826 * np.median(np.abs(cmB), 0) + 1e-6
         eB = np.sqrt(((cmB / sigB) ** 2).sum(1)); dB = np.diff(np.r_[0, (eB >= El).astype(np.int8), 0]); r0, r1 = np.flatnonzero(dB == 1), np.flatnonzero(dB == -1)
         mx = np.maximum.reduceat(np.r_[eB, 0], np.column_stack([r0, r1]).ravel())[::2] if len(r0) else np.zeros(0)
-        keep = mx >= Eh; padB = int(0.0005 * fs); r0, r1 = np.maximum(r0[keep] - padB, 0), np.minimum(r1[keep] + padB, len(eB))
+        keep = mx >= Eh; padB = int(round(a.burst_pad_ms * fs / 1000)); r0, r1 = np.maximum(r0[keep] - padB, 0), np.minimum(r1[keep] + padB, len(eB))
         if len(r0):   # merge overlapping stretches
             st_, en_ = [int(r0[0])], [int(r1[0])]
             for u, v in zip(r0[1:], r1[1:]):
@@ -664,7 +668,7 @@ def main():
                 Y[u:v, chB[k]] = np.clip(np.round(seg), -32768, 32767).astype(np.int16); bm[i] |= np.uint16(1 << int(k))
         Y.flush(); del Y, cmB, eB
         bursts = (r0, r1, bm)
-        burst_rep = dict(params=dict(E=Eh, E_lo=El, block_z=Bz, pad_ms=0.5), n=int(len(r0)), total_ms=float((r1 - r0).sum() / fs * 1000),
+        burst_rep = dict(params=dict(E=Eh, E_lo=El, block_z=Bz, pad_ms=a.burst_pad_ms), n=int(len(r0)), total_ms=float((r1 - r0).sum() / fs * 1000),
                          median_ms=float(np.median(r1 - r0) / fs * 1000) if len(r0) else None,
                          per_block={int(b): int(((bm >> k) & 1).sum()) for k, b in enumerate(ubB)})
         log(f"burst pass: {len(r0)} bursts ({burst_rep['total_ms'] / 1000:.1f} s in all), per block {burst_rep['per_block']}")
