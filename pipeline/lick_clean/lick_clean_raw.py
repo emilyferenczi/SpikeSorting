@@ -436,6 +436,9 @@ def main():
     ap.add_argument("--patch-post-ms", type=float, default=0.0, help="extend the straight-line patch this much further AFTER each "
                     "transient's peak (2026-10-31: the leftover at the patch's trailing edge, +0.13..+0.4 ms, is sorted as spikes in "
                     "some multi-units -- 0610 EF384 5.5x their own rate there). 0 = symmetric patch")
+    ap.add_argument("--min-transients", type=int, default=13, help="fewer transients found than this: the copy is left uncleaned "
+                    "(2026-11-01, Emily: the lowest count of all 62 v2 datasets, 13 in 20260604_EF384_sated_g0 -- every dataset is "
+                    "cleaned; was 20)")
     ap.add_argument("--find", choices=["markers", "detect"], default="markers",
                     help="markers: clean at the lick markers (+ the session offset, +-3 ms); detect: find the transients by their "
                          "shape over the whole recording (lick markers only seed the template) -- for sessions whose marker timing "
@@ -539,12 +542,12 @@ def main():
         ev, det_rep, det_x = detect(Xin, trig, fs, nch, blocks, marker_pass=a.marker_pass, low_rule=tuple(a.low_rule) if a.low_rule else None,
                                     large_rule=tuple(a.large_rule) if a.large_rule else None)
         log("detection: " + ", ".join(f"{k} {v}" for k, v in det_rep.items() if k not in ("noise_uV_bits", "template_blocks")))
-        if len(ev) < 20:   # e.g. a sated day with a few dozen licks: nothing to clean -- finish an UNCLEANED copy so the
-            # session is still sorted with the EF fixes, and say so in the report (2026-10-27)
+        if len(ev) < a.min_transients:   # too few to model: finish an UNCLEANED copy so the session is still sorted with the EF
+            # fixes, and say so in the report (2026-10-27; minimum 20 -> 13 on 2026-11-01 so that every dataset is cleaned)
             rep = dst / "lick_clean"; rep.mkdir(exist_ok=True)
             (rep / "lick_clean_params.json").write_text(json.dumps(dict(
                 session=ses, window_s=a.window, cleaned=False, find=a.find, detection=det_rep, n_detected=int(len(ev)),
-                reason="fewer than 20 transients found: copy left uncleaned", date=time.strftime("%Y-%m-%d %H:%M")), indent=1, default=float))
+                reason=f"fewer than {a.min_transients} transients found: copy left uncleaned", date=time.strftime("%Y-%m-%d %H:%M")), indent=1, default=float))
             np.savez_compressed(rep / "lick_clean_fit.npz", detected=ev, detect_z=det_x.get("z", np.array([])),
                                 detect_r=det_x.get("r", np.array([])), markers=trig, cleaned=False)
             if not a.no_scan:

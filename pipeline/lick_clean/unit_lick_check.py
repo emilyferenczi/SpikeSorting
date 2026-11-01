@@ -85,6 +85,10 @@ def main():
     large = np.unique(np.asarray(F["large"], np.int64)) if "large" in F else np.array([], np.int64)
     if "--events" in sys.argv:          # other event times instead of the contacts (e.g. probe-wide events after the Go cue), as samples
         ev = np.unique(np.load(sys.argv[sys.argv.index("--events") + 1]).astype(np.int64)); large = np.array([], np.int64)
+    if not len(ev):                     # an uncleaned copy (no contacts): say so instead of failing (2026-11-01)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "unit_lick_check.json").write_text(json.dumps(dict(session=ses, contacts=0, note="no cleaned contacts: nothing to check")))
+        print(ses, "no cleaned contacts: nothing to check"); return
     normal = np.setdiff1d(ev, large)
     st = np.load(sd / "spike_times.npy").astype(np.int64).ravel(); clu = np.load(sd / "spike_clusters.npy").ravel(); units = np.unique(clu)
     o = np.argsort(st, kind="stable"); st, clu = st[o], clu[o]
