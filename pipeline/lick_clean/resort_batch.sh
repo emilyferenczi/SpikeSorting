@@ -17,7 +17,7 @@ BASE=$(awk -F= -v p="$PROFILE" '$1==p {print $2}' pipeline/user_profiles.conf | 
 [ -n "$BASE" ] || { echo "profile $PROFILE not in pipeline/user_profiles.conf"; exit 1; }
 SRC=${RESORT_SRC:-/n/netscratch/bsabatini_lab/Lab/eferenczi/spikesorting/aind_input}
 LICKS=$BASE/lick_inputs; TODO=$BASE/aind_input/todo; DONE=$BASE/aind_input; OUT=$BASE/aind_output_fordownload; TR=$BASE/transfer
-mkdir -p "$TODO" "$TR"
+mkdir -p "$TODO" "$TR"; JOBS=()
 echo "[$(date)] batch of $# session(s), profile $PROFILE, base $BASE"
 
 # 1. cleaning jobs (CPU only, no GPU, on CLEAN_PARTITION: at most MAX_CLEAN of this user's jobs there at a time)
@@ -37,11 +37,14 @@ for s in "$@"; do
   # memory from the session's lick count (~2.6 MB per transient for the snippets + ~4 GB): 6 GB for a sated day, ~23 GB
   # for the busiest session, so the request stays close to what the job uses
   nl=$(wc -l < "$LICKS/${s}_lick_onsets_imec.txt"); mem=$(( 4 + (nl * 3 + 999) / 1000 )); [ $mem -lt 6 ] && mem=6; [ $mem -gt 24 ] && mem=24; mem=$((mem + 8))   # + 8 GB: whole-recording scan (2026-10-29)
-  sbatch --partition="$CLEAN_PARTITION" --time="$CLEAN_TIME" --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" $CLEAN_OPTS
+  jid=$(sbatch --parsable --partition="$CLEAN_PARTITION" --time="$CLEAN_TIME" --mem=${mem}G pipeline/lick_clean/lick_clean.slrm "$SRC/$s" "$TODO" --licks "$LICKS/${s}_lick_onsets_imec.txt" $CLEAN_OPTS) && JOBS+=("$jid") && echo "  $s: cleaning job $jid"
 done
 
-# 2. wait for every cleaning job of this user; refuse to sort if a copy is incomplete
-while squeue -u "$USER" -h -n lick_clean | grep -q .; do sleep 300; done
+# 2. wait for the cleaning jobs; refuse to sort if a copy is incomplete
+# wait for this batch's own cleaning jobs only (2026-11-01: another batch's cleaning may be running under the same user);
+# a job that did not finish leaves its .partial folder, checked below
+own_running() { local j; for j in "${JOBS[@]}"; do squeue -h -j "$j" 2>/dev/null | grep -q . && return 0; done; return 1; }
+while [ ${#JOBS[@]} -gt 0 ] && own_running; do sleep 300; done
 if ls -d "$TODO"/*.partial >/dev/null 2>&1; then
   echo "[$(date)] a cleaning job did not finish (.partial folder left) -- NOT sorting. Check lick_clean_*.out / .err:"; ls "$TODO"; exit 1
 fi
