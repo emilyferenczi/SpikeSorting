@@ -43,7 +43,7 @@ done
 # 2. wait for the cleaning jobs; refuse to sort if a copy is incomplete
 # wait for this batch's own cleaning jobs only (2026-11-01: another batch's cleaning may be running under the same user);
 # a job that did not finish leaves its .partial folder, checked below
-own_running() { local j; for j in "${JOBS[@]}"; do squeue -h -j "$j" 2>/dev/null | grep -q . && return 0; done; return 1; }
+own_running() { local j; for j in "${JOBS[@]}"; do squeue -h -j "$j" -t PD,CF,R,CG,S 2>/dev/null | grep -q . && return 0; done; return 1; }   # -t: a finished job stays listed for MinJobAge (10 min)
 while [ ${#JOBS[@]} -gt 0 ] && own_running; do sleep 300; done
 if ls -d "$TODO"/*.partial >/dev/null 2>&1; then
   echo "[$(date)] a cleaning job did not finish (.partial folder left) -- NOT sorting. Check lick_clean_*.out / .err:"; ls "$TODO"; exit 1
