@@ -26,7 +26,9 @@ CLEAN_PARTITION=${CLEAN_PARTITION:-kempner_interactive}; MAX_CLEAN=${MAX_CLEAN:-
 # alone), so a session can need more than the slrm's 2.5 h: CLEAN_TIME sets the limit per job (default 6 h)
 CLEAN_TIME=${CLEAN_TIME:-06:00:00}
 # cleaning options (2026-10-29: one place; the v2 pilot tests adding --second-contact-ms 0.5 3 --marker-pass)
-CLEAN_OPTS=${CLEAN_OPTS:---find detect --patch-ms 0.13}
+# 2026-10-31 (Emily: release): the v2 production setting -- final cleaning + large-transient model + burst step (4-ms window),
+# validated by the production pilot and the verification round (neuropixels/spikesorting/RESORT_V2_CHECKS.md)
+CLEAN_OPTS=${CLEAN_OPTS:---find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank --burst-pass 12 4 4 --burst-pad-ms 4}
 for s in "$@"; do
   if [ -d "$TODO/$s" ] || [ -d "$DONE/$s" ]; then echo "  $s: cleaned copy exists"; continue; fi
   [ -d "$SRC/$s" ] || { echo "  $s: raw folder missing in $SRC -- SKIPPED"; continue; }

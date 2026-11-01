@@ -25,7 +25,9 @@ OUT=$BASE/aind_output_fordownload; TR=$BASE/transfer
 CLEAN_PARTITION=${CLEAN_PARTITION:-kempner_interactive}; CLEAN_TIME=${CLEAN_TIME:-06:00:00}; MAX_CLEAN=${MAX_CLEAN:-7}
 KEEP_CLEANED=${KEEP_CLEANED:-0}
 # cleaning options (2026-10-29: one place; the v2 pilot tests adding --second-contact-ms 0.5 3 --marker-pass)
-CLEAN_OPTS=${CLEAN_OPTS:---find detect --patch-ms 0.13}
+# 2026-10-31 (Emily: release): the v2 production setting -- final cleaning + large-transient model + burst step (4-ms window),
+# validated by the production pilot and the verification round (neuropixels/spikesorting/RESORT_V2_CHECKS.md)
+CLEAN_OPTS=${CLEAN_OPTS:---find detect --patch-ms 0.13 --second-contact-ms 0.5 3 --marker-pass --low-rule 5 0.6 3 --large-rule 30 8 3 --large-model lowrank --burst-pass 12 4 4 --burst-pad-ms 4}
 mkdir -p "$TODO" "$TR" "$STAGE"
 exec > >(tee -a "$BASE/resort_all.log") 2>&1
 mapfile -t BATCHES < <(grep -v '^[[:space:]]*#' "$BATCHFILE" | grep -v '^[[:space:]]*$')
