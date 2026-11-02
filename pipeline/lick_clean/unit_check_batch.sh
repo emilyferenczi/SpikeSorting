@@ -21,7 +21,9 @@ for s in "$@"; do
   echo "  $s: unit check job $j"; jobs+=("$j")
 done
 if [ ${#jobs[@]} -gt 0 ]; then
-  ids=$(IFS=,; echo "${jobs[*]}")
-  while squeue -h -j "$ids" 2>/dev/null | grep -q .; do sleep 120; done
+  # each id on its own, active states only (2026-11-02: a combined -j list fails outright once one id is purged, and a finished
+  # job stays listed for MinJobAge) -- the wait could end before every check had finished
+  active() { local j; for j in "${jobs[@]}"; do squeue -h -j "$j" -t PD,CF,R,CG,S 2>/dev/null | grep -q . && return 0; done; return 1; }
+  while active; do sleep 120; done
   for s in "$@"; do [ -f "$OUT/${s}_output/unit_lick_check/unit_lick_check.json" ] && echo "  $s: $(tr -d '\n ' < "$OUT/${s}_output/unit_lick_check/unit_lick_check.json" | grep -o "\"classes_old\":{[^}]*}")"; done
 fi
