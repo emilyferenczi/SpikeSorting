@@ -1,0 +1,19 @@
+#!/bin/bash
+# Hybrid ground-truth copy of one session (make_hybrid.py; plan: gpe-neuropixels neuropixels/spikesorting/HYBRID_TEST_PLAN.md).
+# CPU only, single-threaded python (raw_extract env), on kempner_interactive like the cleaning jobs. Submit from the SpikeSortingEF folder:
+#   sbatch pipeline/hybrid/make_hybrid.slrm <raw session dir> <out parent dir> <design.npz>
+#SBATCH --job-name=make_hybrid
+#SBATCH --partition=kempner_interactive
+#SBATCH --account=kempner_bsabatini_lab
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=16G
+#SBATCH --time=05:00:00
+#SBATCH --output=make_hybrid_%j.out
+#SBATCH --error=make_hybrid_%j.err
+set -euo pipefail
+PY=/n/holylabs/LABS/bsabatini_lab/Users/eferenczi/envs/raw_extract/bin/python
+[ -x "$PY" ] || { echo "python env not found: $PY"; exit 1; }
+echo "[$(date)] $* on $(hostname)"
+"$PY" "${SLURM_SUBMIT_DIR:?}/pipeline/hybrid/make_hybrid.py" "$@"
+echo "[$(date)] done"
