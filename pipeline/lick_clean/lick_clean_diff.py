@@ -38,7 +38,13 @@ def main():
     X = np.memmap(apr, dtype=np.int16, mode="r").reshape(-1, nsv); Y = np.memmap(apc, dtype=np.int16, mode="r").reshape(-1, nsv); n = min(len(X), len(Y))
     F = np.load(cl / "lick_clean" / "lick_clean_fit.npz", allow_pickle=True)
     W = int((LC.PRE_MS + LC.POST_MS) * fs / 1000); J = int(LC.JIT_MS * fs / 1000)
-    s = np.unique(np.asarray(F["starts"], np.int64)); win = (s - J, s + W + J)            # expected windows
+    # an UNCLEANED copy (lick_clean_raw.py: fewer than --min-transients transients, e.g. a rest / anesthesia run without licks;
+    # its fit has no 'starts', cleaned=False) has no cleaning windows: it must be identical to raw, so any changed sample counts as
+    # outside (2026-11-18: the first uncleaned copies since this step existed, 20261113_EF407 Rest g1 / Anesthesia g0, ended in a
+    # KeyError 'starts'; their copies were byte-identical to raw)
+    cleaned = bool(F["cleaned"]) if "cleaned" in F.files else True
+    s = np.unique(np.asarray(F["starts"], np.int64)) if "starts" in F.files else np.zeros(0, np.int64)
+    win = (s - J, s + W + J)                                                                 # expected windows
     if "burst_start" in F and len(F["burst_start"]):                                      # + the burst pass's stretches
         win = (np.r_[win[0], np.asarray(F["burst_start"], np.int64)], np.r_[win[1], np.asarray(F["burst_end"], np.int64)])
     C = int(4 * fs); runs, diffs, n_sync, n_clip, dmax = [], [], 0, 0, 0
@@ -65,7 +71,10 @@ def main():
     ws, we = win; o = np.argsort(ws); ws, we = ws[o], np.maximum.accumulate(we[o])
     outside = 0
     for a, b, dd in zip(rs, re_, md):
-        t = a + np.flatnonzero(np.any(dd != 0, 1)); i = np.searchsorted(ws, t, "right") - 1
+        t = a + np.flatnonzero(np.any(dd != 0, 1))
+        if not len(ws):                                                                      # no windows (uncleaned copy)
+            outside += len(t); continue
+        i = np.searchsorted(ws, t, "right") - 1
         outside += int(np.count_nonzero((i < 0) | (t >= we[np.maximum(i, 0)])))
     nchg = int(sum(int(np.count_nonzero(np.any(dd != 0, 1))) for dd in md))
     ok.update(sync_identical=n_sync == 0, all_changes_in_windows=outside == 0, no_clipping=n_clip == 0, diff_fits_int16=dmax < 32767)
@@ -77,7 +86,7 @@ def main():
     for i in np.linspace(0, len(rs) - 1, min(len(rs), 20)).astype(int) if len(rs) else []:
         a, b = max(int(rs[i]) - 50, 0), min(int(re_[i]) + 50, n); rb &= bool(np.array_equal(cleaned_window(X, D, a, b), np.asarray(Y[a:b])))
     ok["rebuild_exact"] = rb
-    rep = dict(session=ses, ok=all(ok.values()), checks=ok, n_samples=int(n), changed_samples=nchg, changed_pct=round(100 * nchg / max(n, 1), 3),
+    rep = dict(session=ses, ok=all(ok.values()), checks=ok, cleaned=cleaned, n_samples=int(n), changed_samples=nchg, changed_pct=round(100 * nchg / max(n, 1), 3),
                runs=int(len(rs)), samples_stored=int((re_ - rs).sum()), changed_outside_windows=outside, sync_changed=n_sync, clipped=n_clip,
                max_abs_diff_bits=dmax, size_mb=round(out.stat().st_size / 1e6, 1), raw_gb=round(apr.stat().st_size / 1e9, 1), seconds=round(time.time() - t0))
     (cl / "lick_clean" / "lick_clean_diff.json").write_text(json.dumps(rep, indent=1)); print(json.dumps(rep), flush=True)
